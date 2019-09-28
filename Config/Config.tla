@@ -49,7 +49,7 @@ Leader election
 \* Sets the current leader for the node
 SetNodeLeader(n, l) ==
     /\ nodeState' = [nodeState EXCEPT ![n] = n = l]
-    /\ UNCHANGED <<>>
+    /\ UNCHANGED <<deviceState, networkChange, deviceChange>>
 
 \* Sets the current leader for a device
 SetDeviceLeader(n, d, l) ==
@@ -205,5 +205,5 @@ Next ==
 
 =============================================================================
 \* Modification History
-\* Last modified Sat Sep 28 02:27:30 PDT 2019 by jordanhalterman
+\* Last modified Sat Sep 28 02:28:51 PDT 2019 by jordanhalterman
 \* Created Fri Sep 27 13:14:24 PDT 2019 by jordanhalterman
