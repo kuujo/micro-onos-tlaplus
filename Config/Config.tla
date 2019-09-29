@@ -270,7 +270,7 @@ Pop(q) == SubSeq(q, 2, Len(q))
 SucceedChange(d, c) ==
     /\ deviceChange' = [deviceChange EXCEPT ![d] = [deviceChange[d] EXCEPT ![c] = [
                             deviceChange[d][c] EXCEPT !.status = Complete, !.result = Succeeded]]]
-    /\ deviceState' = [deviceState EXCEPT ![d] = deviceQueue[d]]
+    /\ deviceState' = [deviceState EXCEPT ![d] = deviceQueue[d][1]]
     /\ deviceQueue' = [deviceQueue EXCEPT ![d] = Pop(deviceQueue[d])]
     /\ UNCHANGED <<nodeVars, networkChange>>
 
@@ -329,5 +329,5 @@ Spec == Init /\ [][Next]_vars
 
 =============================================================================
 \* Modification History
-\* Last modified Sun Sep 29 01:50:46 PDT 2019 by jordanhalterman
+\* Last modified Sun Sep 29 01:55:52 PDT 2019 by jordanhalterman
 \* Created Fri Sep 27 13:14:24 PDT 2019 by jordanhalterman
