@@ -23,9 +23,6 @@ CONSTANT Node
 \* The set of all devices
 CONSTANT Device
 
-\* The set of all possible configuration changes
-CONSTANT Change
-
 \* An empty constant
 CONSTANT Nil
 
@@ -71,7 +68,7 @@ The invariant asserts that any configuration applied to a device implies that al
 device have been applied to all associated devices.
 *)
 TypeInvariant ==
-    /\ \A d \in deviceState :
+    /\ \A d \in DOMAIN deviceState :
           deviceState[d] # Nil => Cardinality({x \in deviceChange :
                                       {y \in deviceChange[d] : 
                                           /\ y < deviceState[d].network 
@@ -121,11 +118,14 @@ that do not impact intersecting sets of devices) by comparing 'Pending' changes 
 
 \* Returns the set of all device changes prior to the given change 'c'
 PrevChanges(c) ==
-    {d \in deviceChange : {i \in DOMAIN deviceChange[d] : i < c}}
+    UNION {{deviceChange[d][i] :
+                i \in {x \in DOMAIN deviceChange[d] : x < c}} :
+                    d \in DOMAIN deviceChange}
 
 \* Returns the set of all incomplete device changes prior to the given change 'c'
-PrevIncompleteChanges(c) ==
-    {x \in PrevChanges(c) : x.status # Complete}
+IncompleteChanges(c) ==
+    UNION {{d : i \in {x \in DOMAIN deviceChange[d] : x < c /\ deviceChange[d][x].status # Complete}} :
+                d \in DOMAIN deviceChange}
 
 \* Returns the set of all devices configured by network change 'c'
 NetworkDevices(c) == DOMAIN networkChange[c].changes
@@ -133,7 +133,7 @@ NetworkDevices(c) == DOMAIN networkChange[c].changes
 \* Node 'n' handles a network configuration change event 'c'
 NetworkSchedulerNetworkChange(n, c) ==
     /\ leadership[n] = TRUE
-    /\ IF Cardinality(NetworkDevices(c) \cap PrevIncompleteChanges(c)) = 0 THEN
+    /\ IF Cardinality(NetworkDevices(c) \cap IncompleteChanges(c)) = 0 THEN
            /\ networkChange' = [networkChange EXCEPT ![c].status = Applying]
        ELSE
            /\ UNCHANGED <<networkChange>>
@@ -165,11 +165,11 @@ HasDeviceChange(d, c) ==
 
 \* Adds a change to a device
 AddDeviceChange(d, c, s) ==
-    Append(deviceChange[d], [networkChange[c].changes[d] EXCEPT !.network = c, !.status = s])
+    Append(deviceChange[d], [network |-> c, status |-> s, value |-> networkChange[c].changes[d]])
 
 \* Updates the status of a device cahnge
 UpdateDeviceChange(d, c, s) ==
-    [deviceChange EXCEPT ![CHOOSE x \in DOMAIN deviceChange[d] :
+    [deviceChange[d] EXCEPT ![CHOOSE x \in DOMAIN deviceChange[d] :
                   deviceChange[d][x].network = c].status = s]
 
 \* Adds or updates a device change
@@ -212,7 +212,7 @@ NetworkControllerDeviceChange(n, d, c) ==
     /\ leadership[n] = TRUE
     /\ LET change == deviceChange[d][c]
        IN
-           \/ /\ deviceChange.status = Complete
+           \/ /\ change.status = Complete
               /\ \/ /\ DeviceChangesComplete(change.network)
                     /\ DeviceChangesSucceeded(change.network)
                     /\ networkChange' = [networkChange EXCEPT ![change.network] = [
@@ -296,7 +296,8 @@ Init ==
     /\ deviceState = [d \in Device |-> Nil]
 
 Next ==
-    \/ \E d \in SUBSET Device : \E c \in Change : Configure([d -> c])
+    \/ \E d \in SUBSET Device : 
+          Configure([x \in d |-> 1])
     \/ \E n \in Node : 
           \E l \in Node : 
              SetNodeLeader(n, l)
@@ -329,5 +330,5 @@ Spec == Init /\ [][Next]_vars
 
 =============================================================================
 \* Modification History
-\* Last modified Sat Sep 28 22:41:43 PDT 2019 by jordanhalterman
+\* Last modified Sun Sep 29 00:07:20 PDT 2019 by jordanhalterman
 \* Created Fri Sep 27 13:14:24 PDT 2019 by jordanhalterman
