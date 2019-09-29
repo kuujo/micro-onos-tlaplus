@@ -69,10 +69,11 @@ device have been applied to all associated devices.
 *)
 TypeInvariant ==
     /\ \A d \in DOMAIN deviceState :
-          deviceState[d] # Nil => Cardinality({x \in deviceChange :
-                                      {y \in deviceChange[d] : 
-                                          /\ y < deviceState[d].network 
-                                          /\ deviceChange[d][y].status # Complete}}) = 0
+          deviceState[d] # Nil =>
+              Cardinality(UNION {{y \in DOMAIN deviceChange[x] :
+                                    /\ deviceChange[x][y].network < deviceState[x].network 
+                                    /\ deviceChange[x][y].status # Complete} :
+                                        x \in DOMAIN deviceChange}) = 0
 
 ----
 (*
@@ -327,5 +328,5 @@ Spec == Init /\ [][Next]_vars
 
 =============================================================================
 \* Modification History
-\* Last modified Sun Sep 29 00:47:40 PDT 2019 by jordanhalterman
+\* Last modified Sun Sep 29 01:43:55 PDT 2019 by jordanhalterman
 \* Created Fri Sep 27 13:14:24 PDT 2019 by jordanhalterman
