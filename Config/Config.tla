@@ -117,7 +117,7 @@ that do not impact intersecting sets of devices) by comparing Pending changes wi
 Applying changes.
 *)
 
-\* Return the set of all incomplete device changes prior to network c
+\* Return the set of all incomplete device changes prior to network change c
 IncompleteChanges(c) ==
     UNION {{d : i \in {x \in DOMAIN deviceChange[d] :
                 /\ deviceChange[d][x].network < c 
@@ -149,8 +149,9 @@ When a network change is received:
 - If the network change status is Applying, update device change statuses to Applying
 
 When a device change is received:
-- If all device change statuses for the network are Complete, mark the network change
-'Complete' with a result of 'Succeeded' if all device changes succeeded, otherwise Failed
+- If all device change statuses for the network are Complete
+- Mark the network change Complete with a Succeeded result if all device changes succeeded
+- Otherwise mark the network change Complete with a Failed result
 
 Updates to network and device changes are atomic, and real-world implementations of the spec
 must provide for atomic updates for network and device changes as well. This can be done using
@@ -328,5 +329,5 @@ Spec == Init /\ [][Next]_vars
 
 =============================================================================
 \* Modification History
-\* Last modified Sun Sep 29 01:43:55 PDT 2019 by jordanhalterman
+\* Last modified Sun Sep 29 01:50:46 PDT 2019 by jordanhalterman
 \* Created Fri Sep 27 13:14:24 PDT 2019 by jordanhalterman
