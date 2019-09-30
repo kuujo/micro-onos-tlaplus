@@ -140,7 +140,8 @@ PriorNetworkChanges(c) ==
 NetworkCompletedChanges(c) ==
     {d \in DOMAIN networkChange[c].changes :
         /\ Cardinality({x \in DOMAIN deviceChange[d] : deviceChange[d][x].network = c}) # 0 
-        /\ deviceChange[d][CHOOSE x \in DOMAIN deviceChange[d] : deviceChange[d][x].network = c].status = Complete}
+        /\ deviceChange[d][CHOOSE x \in DOMAIN deviceChange[d] 
+               : deviceChange[d][x].network = c].status = Complete}
 
 \* Return a boolean indicating whether all device changes are complete for the given network change
 NetworkChangesComplete(c) == 
@@ -148,7 +149,8 @@ NetworkChangesComplete(c) ==
 
 \* Return the set of all incomplete device changes prior to network change c
 PriorIncompleteDevices(c) ==
-    UNION {DOMAIN networkChange[n].changes : n \in {n \in PriorNetworkChanges(c) : ~NetworkChangesComplete(n)}}
+    UNION {DOMAIN networkChange[n].changes : 
+               n \in {n \in PriorNetworkChanges(c) : ~NetworkChangesComplete(n)}}
 
 \* Return the set of all devices configured by network change c
 NetworkChangeDevices(c) == DOMAIN networkChange[c].changes
@@ -247,10 +249,12 @@ NetworkControllerNetworkChange(n, c) ==
     /\ leadership[n] = TRUE
     /\ LET change == networkChange[c] IN
            \/ /\ change.status = Pending
-              /\ Cardinality({d \in DOMAIN networkChange[c].changes : ~HasDeviceStatus(d, c, Pending)}) > 0
+              /\ Cardinality({d \in DOMAIN networkChange[c].changes : 
+                     ~HasDeviceStatus(d, c, Pending)}) > 0
               /\ deviceChange' = [d \in Device |-> AddDeviceChange(d, c)]
            \/ /\ change.status = Applying
-              /\ Cardinality({d \in DOMAIN networkChange[c].changes : ~HasDeviceStatus(d, c, Applying)}) > 0
+              /\ Cardinality({d \in DOMAIN networkChange[c].changes : 
+                     ~HasDeviceStatus(d, c, Applying)}) > 0
               /\ deviceChange' = [d \in Device |-> ApplyDeviceChange(d, c)]
     /\ UNCHANGED <<nodeVars, networkChange, deviceVars, constraintVars>>
 
@@ -303,32 +307,38 @@ DeviceControllerDeviceChange(n, d, c) ==
     /\ LET change == deviceChange[d][c]
        IN
            /\ change.status = Applying
-           /\ Cardinality({i \in DOMAIN deviceQueue[d] : deviceQueue[d][i] = c}) = 0
-           /\ deviceQueue' = [deviceQueue EXCEPT ![d] = Append(deviceQueue[d], c)]
+           /\ Cardinality({i \in DOMAIN deviceQueue[n][d] : deviceQueue[n][d][i] = c}) = 0
+           /\ deviceQueue' = [deviceQueue EXCEPT ![n] = [
+                                  deviceQueue[n] EXCEPT ![d] = Append(deviceQueue[n][d], c)]]
     /\ UNCHANGED <<nodeVars, configVars, deviceState, constraintVars>>
 
 \* Return a sequence with the head removed
 Pop(q) == SubSeq(q, 2, Len(q))
 
 \* Mark change c on device d succeeded
-SucceedChange(d) ==
-    /\ Len(deviceQueue[d]) > 0
-    /\ deviceChange' = [deviceChange EXCEPT ![d] = [deviceChange[d] EXCEPT ![deviceQueue[d][1]] = [
-                            deviceChange[d][deviceQueue[d][1]] EXCEPT 
-                                !.status = Complete,
-                                !.result = Succeeded]]]
-    /\ deviceState' = [deviceState EXCEPT ![d] = deviceChange[d][deviceQueue[d][1]].network]
-    /\ deviceQueue' = [deviceQueue EXCEPT ![d] = Pop(deviceQueue[d])]
+SucceedChange(n, d) ==
+    /\ Len(deviceQueue[n][d]) > 0
+    /\ deviceChange' = [deviceChange EXCEPT ![d] = [
+                            deviceChange[d] EXCEPT ![deviceQueue[n][d][1]] = [
+                                deviceChange[d][deviceQueue[n][d][1]] EXCEPT 
+                                    !.status = Complete,
+                                    !.result = Succeeded]]]
+    /\ deviceState' = [deviceState EXCEPT ![d] = 
+                           deviceChange[d][deviceQueue[n][d][1]].network]
+    /\ deviceQueue' = [deviceQueue EXCEPT ![n] = [
+                           deviceQueue[n] EXCEPT ![d] = Pop(deviceQueue[n][d])]]
     /\ UNCHANGED <<nodeVars, networkChange, constraintVars>>
 
 \* Mark change c on device d failed
-FailChange(d) ==
-    /\ Len(deviceQueue[d]) > 0
-    /\ deviceChange' = [deviceChange EXCEPT ![d] = [deviceChange[d] EXCEPT ![deviceQueue[d][1]] = [
-                            deviceChange[d][deviceQueue[d][1]] EXCEPT 
-                                !.status = Complete, 
-                                !.result = Failed]]]
-    /\ deviceQueue' = [deviceQueue EXCEPT ![d] = Pop(deviceQueue[d])]
+FailChange(n, d) ==
+    /\ Len(deviceQueue[n][d]) > 0
+    /\ deviceChange' = [deviceChange EXCEPT ![d] = [
+                            deviceChange[d] EXCEPT ![deviceQueue[n][d][1]] = [
+                                deviceChange[d][deviceQueue[n][d][1]] EXCEPT 
+                                    !.status = Complete, 
+                                    !.result = Failed]]]
+    /\ deviceQueue' = [deviceQueue EXCEPT ![n] = [
+                           deviceQueue[n] EXCEPT ![d] = Pop(deviceQueue[n][d])]]
     /\ UNCHANGED <<nodeVars, networkChange, deviceState, constraintVars>>
 
 ----
@@ -341,7 +351,7 @@ Init ==
     /\ mastership = [n \in Node |-> [d \in Device |-> FALSE]]
     /\ networkChange = <<>>
     /\ deviceChange = [d \in Device |-> <<>>]
-    /\ deviceQueue = [d \in Device |-> <<>>]
+    /\ deviceQueue = [n \in Node |-> [d \in Device |-> <<>>]]
     /\ deviceState = [d \in Device |-> Zero]
     /\ electionCount = 0
     /\ configCount = 0
@@ -370,14 +380,16 @@ Next ==
           \E d \in Device :
              \E c \in DOMAIN deviceChange[d] :
                 DeviceControllerDeviceChange(n, d, c)
-    \/ \E d \in Device :
-          SucceedChange(d)
-    \/ \E d \in Device :
-          FailChange(d)
+    \/ \E n \in Node :
+          \E d \in Device :
+             SucceedChange(n, d)
+    \/ \E n \in Node :
+          \E d \in Device :
+             FailChange(n, d)
 
 Spec == Init /\ [][Next]_vars
 
 =============================================================================
 \* Modification History
-\* Last modified Sun Sep 29 22:23:11 PDT 2019 by jordanhalterman
+\* Last modified Sun Sep 29 22:43:56 PDT 2019 by jordanhalterman
 \* Created Fri Sep 27 13:14:24 PDT 2019 by jordanhalterman
