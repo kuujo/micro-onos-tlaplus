@@ -17,6 +17,12 @@ CONSTANT Succeeded
 \* Indicates that a configuration change failed
 CONSTANT Failed
 
+\* Indicates a change is a configuration
+CONSTANT Config
+
+\* Indicates a change is a rollback
+CONSTANT Revert
+
 \* Indicates a device is available
 CONSTANT Available
 
@@ -121,17 +127,26 @@ SetDeviceMaster(n, d, l) ==
 
 ----
 (*
-This section models the northbound API for the configuration service. The API
-exposes a single step to enqueue a configuration change. Rollback is not explicitly
-modelled as it can be implemented in an additional Configure step performing the
-inverse of the change being rolled back. When a configuration change is enqueued,
-it's simply added to network change for control loops to handle.
+This section models the northbound API for the configuration service.
 *)
 
 \* Enqueue network configuration change c
 Configure(c) ==
     /\ networkChange' = Append(networkChange, [
+                            type    |-> Config,
                             changes |-> c, 
+                            value   |-> Len(networkChange),
+                            status  |-> Pending,
+                            result  |-> Nil])
+    /\ configCount' = configCount + 1
+    /\ UNCHANGED <<nodeVars, deviceChange, deviceVars, electionCount, availabilityCount>>
+
+\* Roll back configuration change c
+Rollback(c) ==
+    /\ networkChange' = Append(networkChange, [
+                            type    |-> Revert,
+                            changes |-> networkChange[c].changes,
+                            value   |-> c,
                             status  |-> Pending,
                             result  |-> Nil])
     /\ configCount' = configCount + 1
@@ -229,8 +244,9 @@ AddDeviceChange(d, c) ==
     IF d \in DOMAIN networkChange[c].changes /\ ~HasDeviceChange(d, c) THEN
         Append(deviceChange[d], [
             network |-> c, 
+            type    |-> networkChange[c].type,
             status  |-> Pending, 
-            value   |-> networkChange[c].changes[d], 
+            value   |-> networkChange[c].value, 
             result  |-> Nil,
             reason  |-> Nil])
     ELSE
@@ -247,8 +263,9 @@ ApplyDeviceChange(d, c) ==
         ELSE
             Append(deviceChange[d], [
                 network |-> c, 
+                type    |-> networkChange[c].type,
                 status  |-> Applying, 
-                value   |-> networkChange[c].changes[d], 
+                value   |-> networkChange[c].value, 
                 result  |-> Nil,
                 reason  |-> Nil])
     ELSE
@@ -327,7 +344,7 @@ may exist for a device without violating safety properties.
 
 When a device change is received:
 - If the node believes itself to be the master for the device and the change status
-  is Applying, apply the change
+is Applying, apply the change
 - Set the change status to Complete
 - If the change was applied successfully, set the change result to Succeeded
 - If the change failed, set the change result to Failed
@@ -347,8 +364,14 @@ DeviceControllerDeviceChange(n, d, c) ==
        IN
            /\ change.status = Applying
            /\ Cardinality({i \in DOMAIN deviceQueue[n][d] : deviceQueue[n][d][i] = c}) = 0
-           /\ deviceQueue' = [deviceQueue EXCEPT ![n] = [
-                                  deviceQueue[n] EXCEPT ![d] = Append(deviceQueue[n][d], c)]]
+           /\ \/ /\ change.type = Config
+                 /\ deviceQueue' = [deviceQueue EXCEPT ![n] = [
+                                     deviceQueue[n] EXCEPT ![d] = Append(deviceQueue[n][d], c)]]
+              \/ /\ change.type = Revert
+                 /\ networkChange[deviceChange[change.value]].status = Complete
+                 /\ networkChange[deviceChange[change.value]].result = Succeeded
+                 /\ deviceQueue' = [deviceQueue EXCEPT ![n] = [
+                                     deviceQueue[n] EXCEPT ![d] = Append(deviceQueue[n][d], c)]]
     /\ UNCHANGED <<nodeVars, configVars, deviceConfig, deviceState, constraintVars>>
 
 \* Return a sequence with the head removed
@@ -364,7 +387,7 @@ SucceedChange(n, d) ==
                                     !.status = Complete,
                                     !.result = Succeeded]]]
     /\ deviceConfig' = [deviceConfig EXCEPT ![d] = 
-                           deviceChange[d][deviceQueue[n][d][1]].network]
+                           deviceChange[d][deviceQueue[n][d][1]].value]
     /\ deviceQueue' = [deviceQueue EXCEPT ![n] = [
                            deviceQueue[n] EXCEPT ![d] = Pop(deviceQueue[n][d])]]
     /\ UNCHANGED <<nodeVars, networkChange, deviceState, constraintVars>>
@@ -420,6 +443,8 @@ Init ==
 Next ==
     \/ \E d \in SUBSET Device : 
           Configure([x \in d |-> 1])
+    \/ \E c \in DOMAIN networkChange :
+          Rollback(c)
     \/ \E n \in Node : 
           \E l \in Node : 
              SetNodeLeader(n, l)
@@ -456,5 +481,5 @@ Spec == Init /\ [][Next]_vars
 
 =============================================================================
 \* Modification History
-\* Last modified Mon Sep 30 12:53:27 PDT 2019 by jordanhalterman
+\* Last modified Mon Sep 30 13:34:45 PDT 2019 by jordanhalterman
 \* Created Fri Sep 27 13:14:24 PDT 2019 by jordanhalterman
