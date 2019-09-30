@@ -132,23 +132,39 @@ that do not impact intersecting sets of devices) by comparing Pending changes wi
 Applying changes.
 *)
 
+\* Return the set of all network changes prior to the given change
+PriorNetworkChanges(c) ==
+    {n \in DOMAIN networkChange : n < c}
+
+\* Return the set of all completed device changes for network change c
+NetworkCompletedChanges(c) ==
+    {d \in DOMAIN networkChange[c].changes :
+        /\ Cardinality({x \in DOMAIN deviceChange[d] : deviceChange[d][x].network = c}) # 0 
+        /\ deviceChange[d][CHOOSE x \in DOMAIN deviceChange[d] : deviceChange[d][x].network = c].status = Complete}
+
+\* Return a boolean indicating whether all device changes are complete for the given network change
+NetworkChangesComplete(c) == 
+    Cardinality(NetworkCompletedChanges(c)) = Cardinality(DOMAIN networkChange[c].changes)
+
 \* Return the set of all incomplete device changes prior to network change c
-IncompleteChanges(c) ==
-    UNION {{d : i \in {x \in DOMAIN deviceChange[d] :
-                /\ deviceChange[d][x].network < c 
-                /\ deviceChange[d][x].status # Complete}} :
-                    d \in DOMAIN deviceChange}
+PriorIncompleteDevices(c) ==
+    UNION {DOMAIN networkChange[n].changes : n \in {n \in PriorNetworkChanges(c) : ~NetworkChangesComplete(n)}}
 
 \* Return the set of all devices configured by network change c
 NetworkChangeDevices(c) == DOMAIN networkChange[c].changes
 
+\* Return a boolean indicating whether network change c can be applied
+\* A change can be applied if its devices do not intersect with past device
+\* changes that have not been applied
+CanApply(c) ==
+    Cardinality(NetworkChangeDevices(c) \cap PriorIncompleteDevices(c)) = 0
+
 \* Node n handles a network configuration change event c
 NetworkSchedulerNetworkChange(n, c) ==
     /\ leadership[n] = TRUE
-    /\ IF Cardinality(NetworkChangeDevices(c) \cap IncompleteChanges(c)) = 0 THEN
-           /\ networkChange' = [networkChange EXCEPT ![c].status = Applying]
-       ELSE
-           /\ UNCHANGED <<networkChange>>
+    /\ networkChange[c].status = Pending
+    /\ CanApply(c)
+    /\ networkChange' = [networkChange EXCEPT ![c].status = Applying]
     /\ UNCHANGED <<nodeVars, deviceChange, deviceVars, constraintVars>>
 
 ----
@@ -177,32 +193,45 @@ either optimistic or pessimistic concurrency control.
 HasDeviceChange(d, c) ==
     Cardinality({x \in DOMAIN deviceChange[d] : deviceChange[d][x].network = c}) # 0
 
-\* Add change c on device s with status s
-AddDeviceChange(d, c, s) ==
-    Append(deviceChange[d], [
-        network |-> c, 
-        status |-> s, 
-        value |-> networkChange[c].changes[d], 
-        result |-> Nil])
+\* Return the index of the device change for network change c
+DeviceChange(d, c) ==
+    CHOOSE x \in DOMAIN deviceChange[d] : deviceChange[d][x].network = c
 
-\* Update change c on device d to status s
-UpdateDeviceChange(d, c, s) ==
-    [deviceChange[d] EXCEPT ![CHOOSE x \in DOMAIN deviceChange[d] :
-                  deviceChange[d][x].network = c].status = s]
+\* Return a boolean indicating whether the device change for network change c has status s
+HasDeviceStatus(d, c, s) ==
+    deviceChange[d][DeviceChange(d, c)].status = s
 
-\* Set change c on device d to status s
-SetDeviceChange(d, c, s) ==
+\* Add change c on device s
+AddDeviceChange(d, c) ==
+    IF d \in DOMAIN networkChange[c].changes /\ ~HasDeviceChange(d, c) THEN
+        Append(deviceChange[d], [
+            network |-> c, 
+            status  |-> Pending, 
+            value   |-> networkChange[c].changes[d], 
+            result  |-> Nil])
+    ELSE
+        deviceChange[d]
+
+\* Change the status of change c on device s from Pending to Applying
+ApplyDeviceChange(d, c) ==
     IF d \in DOMAIN networkChange[c].changes THEN
         IF HasDeviceChange(d, c) THEN
-            UpdateDeviceChange(d, c, s)
+            IF HasDeviceStatus(d, c, Pending) THEN
+                [deviceChange[d] EXCEPT ![DeviceChange(d, c)].status = Applying]
+            ELSE
+                deviceChange[d]
         ELSE
-            AddDeviceChange(d, c, s)
+            Append(deviceChange[d], [
+                network |-> c, 
+                status  |-> Applying, 
+                value   |-> networkChange[c].changes[d], 
+                result  |-> Nil])
     ELSE
         deviceChange[d]
 
 \* Return the set of all device changes for network change c
 DeviceChanges(c) ==
-    {deviceChange[d][CHOOSE x \in DOMAIN deviceChange[d] : deviceChange[d][x].network = c] :
+    {deviceChange[d][DeviceChange(d, c)] :
         d \in {d \in DOMAIN networkChange[c].changes : HasDeviceChange(d, c)}}
 
 \* Return a boolean indicating whether all device changes for network change c are complete
@@ -218,9 +247,9 @@ NetworkControllerNetworkChange(n, c) ==
     /\ leadership[n] = TRUE
     /\ LET change == networkChange[c] IN
            \/ /\ change.status = Pending
-              /\ deviceChange' = [d \in Device |-> SetDeviceChange(d, c, Pending)]
+              /\ deviceChange' = [d \in Device |-> AddDeviceChange(d, c)]
            \/ /\ change.status = Applying
-              /\ deviceChange' = [d \in Device |-> SetDeviceChange(d, c, Applying)]
+              /\ deviceChange' = [d \in Device |-> ApplyDeviceChange(d, c)]
            \/ /\ change.status = Complete
               /\ UNCHANGED <<deviceChange>>
     /\ UNCHANGED <<nodeVars, networkChange, deviceVars, constraintVars>>
@@ -354,5 +383,5 @@ Spec == Init /\ [][Next]_vars
 
 =============================================================================
 \* Modification History
-\* Last modified Sun Sep 29 21:12:22 PDT 2019 by jordanhalterman
+\* Last modified Sun Sep 29 22:13:25 PDT 2019 by jordanhalterman
 \* Created Fri Sep 27 13:14:24 PDT 2019 by jordanhalterman
