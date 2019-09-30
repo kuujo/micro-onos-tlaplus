@@ -17,6 +17,15 @@ CONSTANT Succeeded
 \* Indicates that a configuration change failed
 CONSTANT Failed
 
+\* Indicates a device is available
+CONSTANT Available
+
+\* Indicates a device is unavailable
+CONSTANT Unavailable
+
+\* Indicates that an error occurred when applying a change
+CONSTANT Error
+
 \* The set of all nodes
 CONSTANT Node
 
@@ -25,9 +34,6 @@ CONSTANT Device
 
 \* An empty constant
 CONSTANT Nil
-
-\* A zero constant
-CONSTANT Zero
 
 \* Per-node election state
 VARIABLE leadership
@@ -47,8 +53,11 @@ VARIABLE deviceChange
 \* A record of sequences of pending configuration changes to each device.
 VARIABLE deviceQueue
 
-\* A record of device states derived from configuration chagnes pushed
+\* A record of device configurations derived from configuration chagnes pushed
 \* to each device.
+VARIABLE deviceConfig
+
+\* A record of device states - either Available or Unavailable
 VARIABLE deviceState
 
 \* A count of leader changes to serve as a state constraint
@@ -56,6 +65,9 @@ VARIABLE electionCount
 
 \* A count of configuration changes to serve as a state constraint
 VARIABLE configCount
+
+\* A count of device availability changes to serve as a state constraint
+VARIABLE availabilityCount
 
 ----
 
@@ -66,12 +78,12 @@ nodeVars == <<leadership, mastership>>
 configVars == <<networkChange, deviceChange>>
 
 \* Device variables
-deviceVars == <<deviceQueue, deviceState>>
+deviceVars == <<deviceQueue, deviceConfig, deviceState>>
 
 \* State constraint variables
-constraintVars == <<electionCount, configCount>>
+constraintVars == <<electionCount, configCount, availabilityCount>>
 
-vars == <<leadership, mastership, networkChange, deviceChange, deviceState>>
+vars == <<leadership, mastership, networkChange, deviceChange, deviceConfig>>
 
 ----
 
@@ -80,10 +92,10 @@ The invariant asserts that any configuration applied to a device implies that al
 device have been applied to all associated devices.
 *)
 TypeInvariant ==
-    /\ \A d \in DOMAIN deviceState :
-          deviceState[d] # Zero =>
+    /\ \A d \in DOMAIN deviceConfig :
+          deviceConfig[d] # 0 =>
               Cardinality(UNION {{y \in DOMAIN deviceChange[x] :
-                                    /\ deviceChange[x][y].network < deviceState[x] 
+                                    /\ deviceChange[x][y].network < deviceConfig[x] 
                                     /\ deviceChange[x][y].status # Complete} :
                                         x \in DOMAIN deviceChange}) = 0
 
@@ -99,13 +111,13 @@ of leadership changes is irrelevant to the correctness of the spec.
 SetNodeLeader(n, l) ==
     /\ leadership' = [leadership EXCEPT ![n] = n = l]
     /\ electionCount' = electionCount + 1
-    /\ UNCHANGED <<mastership, configVars, deviceVars, configCount>>
+    /\ UNCHANGED <<mastership, configVars, deviceVars, configCount, availabilityCount>>
 
 \* Set the master for device d on node n to l
 SetDeviceMaster(n, d, l) ==
     /\ mastership' = [mastership EXCEPT ![n] = [mastership[n] EXCEPT ![d] = n = l]]
     /\ electionCount' = electionCount + 1
-    /\ UNCHANGED <<leadership, configVars, deviceVars, configCount>>
+    /\ UNCHANGED <<leadership, configVars, deviceVars, configCount, availabilityCount>>
 
 ----
 (*
@@ -118,9 +130,12 @@ it's simply added to network change for control loops to handle.
 
 \* Enqueue network configuration change c
 Configure(c) ==
-    /\ networkChange' = Append(networkChange, [changes |-> c, status |-> Pending, result |-> Nil])
+    /\ networkChange' = Append(networkChange, [
+                            changes |-> c, 
+                            status  |-> Pending,
+                            result  |-> Nil])
     /\ configCount' = configCount + 1
-    /\ UNCHANGED <<nodeVars, deviceChange, deviceVars, electionCount>>
+    /\ UNCHANGED <<nodeVars, deviceChange, deviceVars, electionCount, availabilityCount>>
 
 ----
 (*
@@ -178,13 +193,19 @@ be executed on a node that believes itself to be the leader. Note, however, that
 model does not require a single leader.
 
 When a network change is received:
-- If the network change status is Pending, add device changes for each configured device
-- If the network change status is Applying, update device change statuses to Applying
+- If the network change status is Pending
+  - Add device changes for each configured device
+- If the network change status is Applying
+  - Update device change statuses to Applying
 
 When a device change is received:
 - If all device change statuses for the network are Complete
-- Mark the network change Complete with a Succeeded result if all device changes succeeded
-- Otherwise mark the network change Complete with a Failed result
+  - Mark the network change Complete with a Succeeded result if all device changes succeeded
+  - Otherwise mark the network change Complete with a Failed result
+- If all device changes failed due to Unavailable devices
+  - Set the network change back to Pending
+- If at least one device change succeeded but a subset failed
+  - Fail the network change
 
 Updates to network and device changes are atomic, and real-world implementations of the spec
 must provide for atomic updates for network and device changes as well. This can be done using
@@ -210,7 +231,8 @@ AddDeviceChange(d, c) ==
             network |-> c, 
             status  |-> Pending, 
             value   |-> networkChange[c].changes[d], 
-            result  |-> Nil])
+            result  |-> Nil,
+            reason  |-> Nil])
     ELSE
         deviceChange[d]
 
@@ -227,7 +249,15 @@ ApplyDeviceChange(d, c) ==
                 network |-> c, 
                 status  |-> Applying, 
                 value   |-> networkChange[c].changes[d], 
-                result  |-> Nil])
+                result  |-> Nil,
+                reason  |-> Nil])
+    ELSE
+        deviceChange[d]
+
+\* Change the status of change c on device s to Pending
+PendDeviceChange(d, c) ==
+    IF d \in DOMAIN networkChange[c].changes THEN
+        [deviceChange[d] EXCEPT ![DeviceChange(d, c)].status = Pending]
     ELSE
         deviceChange[d]
 
@@ -243,6 +273,11 @@ DeviceChangesComplete(c) ==
 \* Return a boolean indicating whether all device changes for network change c were successful
 DeviceChangesSucceeded(c) ==
     Cardinality({x \in DeviceChanges(c) : x.result = Succeeded}) = Cardinality(DeviceChanges(c))
+
+\* Return a boolean indicating whether all device changes failed due to Unavailable devices
+DeviceChangesUnavailable(c) ==
+    Cardinality({x \in DeviceChanges(c) : x.result = Failed /\ x.reason = Unavailable}) =
+        Cardinality(DeviceChanges(c))
 
 \* Node n handles a network configuration change c
 NetworkControllerNetworkChange(n, c) ==
@@ -265,7 +300,11 @@ NetworkControllerDeviceChange(n, d, c) ==
        IN
            /\ change.status = Complete
            /\ networkChange[change.network].status # Complete
-           /\ \/ /\ DeviceChangesComplete(change.network)
+           /\ \/ /\ DeviceChangesUnavailable(change.network)
+                 /\ networkChange' = [networkChange EXCEPT ![change.network] = [
+                                          networkChange[change.network] EXCEPT 
+                                              !.status = Pending]]
+              \/ /\ DeviceChangesComplete(change.network)
                  /\ DeviceChangesSucceeded(change.network)
                  /\ networkChange' = [networkChange EXCEPT ![change.network] = [
                                           networkChange[change.network] EXCEPT
@@ -310,7 +349,7 @@ DeviceControllerDeviceChange(n, d, c) ==
            /\ Cardinality({i \in DOMAIN deviceQueue[n][d] : deviceQueue[n][d][i] = c}) = 0
            /\ deviceQueue' = [deviceQueue EXCEPT ![n] = [
                                   deviceQueue[n] EXCEPT ![d] = Append(deviceQueue[n][d], c)]]
-    /\ UNCHANGED <<nodeVars, configVars, deviceState, constraintVars>>
+    /\ UNCHANGED <<nodeVars, configVars, deviceConfig, deviceState, constraintVars>>
 
 \* Return a sequence with the head removed
 Pop(q) == SubSeq(q, 2, Len(q))
@@ -318,18 +357,20 @@ Pop(q) == SubSeq(q, 2, Len(q))
 \* Mark change c on device d succeeded
 SucceedChange(n, d) ==
     /\ Len(deviceQueue[n][d]) > 0
+    /\ deviceState[d] = Available
     /\ deviceChange' = [deviceChange EXCEPT ![d] = [
                             deviceChange[d] EXCEPT ![deviceQueue[n][d][1]] = [
                                 deviceChange[d][deviceQueue[n][d][1]] EXCEPT 
                                     !.status = Complete,
                                     !.result = Succeeded]]]
-    /\ deviceState' = [deviceState EXCEPT ![d] = 
+    /\ deviceConfig' = [deviceConfig EXCEPT ![d] = 
                            deviceChange[d][deviceQueue[n][d][1]].network]
     /\ deviceQueue' = [deviceQueue EXCEPT ![n] = [
                            deviceQueue[n] EXCEPT ![d] = Pop(deviceQueue[n][d])]]
-    /\ UNCHANGED <<nodeVars, networkChange, constraintVars>>
+    /\ UNCHANGED <<nodeVars, networkChange, deviceState, constraintVars>>
 
 \* Mark change c on device d failed
+\* A change can be failed if the device rejects the change or the device is not reachable.
 FailChange(n, d) ==
     /\ Len(deviceQueue[n][d]) > 0
     /\ deviceChange' = [deviceChange EXCEPT ![d] = [
@@ -339,7 +380,25 @@ FailChange(n, d) ==
                                     !.result = Failed]]]
     /\ deviceQueue' = [deviceQueue EXCEPT ![n] = [
                            deviceQueue[n] EXCEPT ![d] = Pop(deviceQueue[n][d])]]
-    /\ UNCHANGED <<nodeVars, networkChange, deviceState, constraintVars>>
+    /\ UNCHANGED <<nodeVars, networkChange, deviceConfig, deviceState, constraintVars>>
+
+----
+(*
+This section models device states. Devices begin in the Unavailable state and can only
+be configured while in the Available state.
+*)
+
+\* Set device d state to Available
+ActivateDevice(d) ==
+    /\ deviceState' = [deviceState EXCEPT ![d] = Available]
+    /\ availabilityCount' = availabilityCount + 1
+    /\ UNCHANGED <<nodeVars, configVars, deviceQueue, deviceConfig, electionCount, configCount>>
+
+\* Set device d state to Unavailable
+DeactivateDevice(d) ==
+    /\ deviceState' = [deviceState EXCEPT ![d] = Unavailable]
+    /\ availabilityCount' = availabilityCount + 1
+    /\ UNCHANGED <<nodeVars, configVars, deviceQueue, deviceConfig, electionCount, configCount>>
 
 ----
 (*
@@ -352,9 +411,11 @@ Init ==
     /\ networkChange = <<>>
     /\ deviceChange = [d \in Device |-> <<>>]
     /\ deviceQueue = [n \in Node |-> [d \in Device |-> <<>>]]
-    /\ deviceState = [d \in Device |-> Zero]
+    /\ deviceConfig = [d \in Device |-> 0]
+    /\ deviceState = [d \in Device |-> Unavailable]
     /\ electionCount = 0
     /\ configCount = 0
+    /\ availabilityCount = 0
 
 Next ==
     \/ \E d \in SUBSET Device : 
@@ -386,10 +447,14 @@ Next ==
     \/ \E n \in Node :
           \E d \in Device :
              FailChange(n, d)
+    \/ \E d \in Device :
+          ActivateDevice(d)
+    \/ \E d \in Device :
+          DeactivateDevice(d)
 
 Spec == Init /\ [][Next]_vars
 
 =============================================================================
 \* Modification History
-\* Last modified Sun Sep 29 22:43:56 PDT 2019 by jordanhalterman
+\* Last modified Mon Sep 30 12:53:27 PDT 2019 by jordanhalterman
 \* Created Fri Sep 27 13:14:24 PDT 2019 by jordanhalterman
