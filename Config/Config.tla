@@ -199,7 +199,7 @@ DeviceChange(d, c) ==
 
 \* Return a boolean indicating whether the device change for network change c has status s
 HasDeviceStatus(d, c, s) ==
-    deviceChange[d][DeviceChange(d, c)].status = s
+    HasDeviceChange(d, c) /\ deviceChange[d][DeviceChange(d, c)].status = s
 
 \* Add change c on device s
 AddDeviceChange(d, c) ==
@@ -247,11 +247,11 @@ NetworkControllerNetworkChange(n, c) ==
     /\ leadership[n] = TRUE
     /\ LET change == networkChange[c] IN
            \/ /\ change.status = Pending
+              /\ Cardinality({d \in DOMAIN networkChange[c].changes : ~HasDeviceStatus(d, c, Pending)}) > 0
               /\ deviceChange' = [d \in Device |-> AddDeviceChange(d, c)]
            \/ /\ change.status = Applying
+              /\ Cardinality({d \in DOMAIN networkChange[c].changes : ~HasDeviceStatus(d, c, Applying)}) > 0
               /\ deviceChange' = [d \in Device |-> ApplyDeviceChange(d, c)]
-           \/ /\ change.status = Complete
-              /\ UNCHANGED <<deviceChange>>
     /\ UNCHANGED <<nodeVars, networkChange, deviceVars, constraintVars>>
 
 \* Node n handles a device configuration change c
@@ -259,21 +259,18 @@ NetworkControllerDeviceChange(n, d, c) ==
     /\ leadership[n] = TRUE
     /\ LET change == deviceChange[d][c]
        IN
-           \/ /\ change.status = Complete
-              /\ \/ /\ DeviceChangesComplete(change.network)
-                    /\ DeviceChangesSucceeded(change.network)
-                    /\ networkChange' = [networkChange EXCEPT ![change.network] = [
-                                             networkChange[change.network] EXCEPT
-                                                 !.status = Complete, !.result = Succeeded]]
-                 \/ /\ DeviceChangesComplete(change.network)
-                    /\ ~DeviceChangesSucceeded(change.network)
-                    /\ networkChange' = [networkChange EXCEPT ![change.network] = [
-                                             networkChange[change.network] EXCEPT
-                                                 !.status = Complete, !.result = Failed]]
-                 \/ /\ ~DeviceChangesComplete(change.network)
-                    /\ UNCHANGED <<networkChange>>
-           \/ /\ change.status # Complete
-              /\ UNCHANGED <<networkChange>>
+           /\ change.status = Complete
+           /\ networkChange[change.network].status # Complete
+           /\ \/ /\ DeviceChangesComplete(change.network)
+                 /\ DeviceChangesSucceeded(change.network)
+                 /\ networkChange' = [networkChange EXCEPT ![change.network] = [
+                                          networkChange[change.network] EXCEPT
+                                              !.status = Complete, !.result = Succeeded]]
+              \/ /\ DeviceChangesComplete(change.network)
+                 /\ ~DeviceChangesSucceeded(change.network)
+                 /\ networkChange' = [networkChange EXCEPT ![change.network] = [
+                                          networkChange[change.network] EXCEPT
+                                              !.status = Complete, !.result = Failed]]
     /\ UNCHANGED <<nodeVars, deviceChange, deviceVars, constraintVars>>
 
 ----
@@ -305,10 +302,9 @@ DeviceControllerDeviceChange(n, d, c) ==
     /\ mastership[n][d] = TRUE
     /\ LET change == deviceChange[d][c]
        IN
-           \/ /\ change.status = Applying
-              /\ deviceQueue' = [deviceQueue EXCEPT ![d] = Append(deviceQueue[d], c)]
-           \/ /\ change.status # Applying
-              /\ UNCHANGED <<deviceQueue>>
+           /\ change.status = Applying
+           /\ Cardinality({i \in DOMAIN deviceQueue[d] : deviceQueue[d][i] = c}) = 0
+           /\ deviceQueue' = [deviceQueue EXCEPT ![d] = Append(deviceQueue[d], c)]
     /\ UNCHANGED <<nodeVars, configVars, deviceState, constraintVars>>
 
 \* Return a sequence with the head removed
@@ -383,5 +379,5 @@ Spec == Init /\ [][Next]_vars
 
 =============================================================================
 \* Modification History
-\* Last modified Sun Sep 29 22:13:25 PDT 2019 by jordanhalterman
+\* Last modified Sun Sep 29 22:23:11 PDT 2019 by jordanhalterman
 \* Created Fri Sep 27 13:14:24 PDT 2019 by jordanhalterman
