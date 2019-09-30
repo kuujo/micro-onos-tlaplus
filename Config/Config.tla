@@ -26,6 +26,9 @@ CONSTANT Device
 \* An empty constant
 CONSTANT Nil
 
+\* A zero constant
+CONSTANT Zero
+
 \* Per-node election state
 VARIABLE leadership
 
@@ -48,6 +51,12 @@ VARIABLE deviceQueue
 \* to each device.
 VARIABLE deviceState
 
+\* A count of leader changes to serve as a state constraint
+VARIABLE electionCount
+
+\* A count of configuration changes to serve as a state constraint
+VARIABLE configCount
+
 ----
 
 \* Node variables
@@ -59,6 +68,9 @@ configVars == <<networkChange, deviceChange>>
 \* Device variables
 deviceVars == <<deviceQueue, deviceState>>
 
+\* State constraint variables
+constraintVars == <<electionCount, configCount>>
+
 vars == <<leadership, mastership, networkChange, deviceChange, deviceState>>
 
 ----
@@ -69,9 +81,9 @@ device have been applied to all associated devices.
 *)
 TypeInvariant ==
     /\ \A d \in DOMAIN deviceState :
-          deviceState[d] # Nil =>
+          deviceState[d] # Zero =>
               Cardinality(UNION {{y \in DOMAIN deviceChange[x] :
-                                    /\ deviceChange[x][y].network < deviceState[x].network 
+                                    /\ deviceChange[x][y].network < deviceState[x] 
                                     /\ deviceChange[x][y].status # Complete} :
                                         x \in DOMAIN deviceChange}) = 0
 
@@ -86,12 +98,14 @@ of leadership changes is irrelevant to the correctness of the spec.
 \* Set the leader for node n to l
 SetNodeLeader(n, l) ==
     /\ leadership' = [leadership EXCEPT ![n] = n = l]
-    /\ UNCHANGED <<mastership, configVars, deviceVars>>
+    /\ electionCount' = electionCount + 1
+    /\ UNCHANGED <<mastership, configVars, deviceVars, configCount>>
 
 \* Set the master for device d on node n to l
 SetDeviceMaster(n, d, l) ==
     /\ mastership' = [mastership EXCEPT ![n] = [mastership[n] EXCEPT ![d] = n = l]]
-    /\ UNCHANGED <<leadership, configVars, deviceVars>>
+    /\ electionCount' = electionCount + 1
+    /\ UNCHANGED <<leadership, configVars, deviceVars, configCount>>
 
 ----
 (*
@@ -104,8 +118,9 @@ it's simply added to network change for control loops to handle.
 
 \* Enqueue network configuration change c
 Configure(c) ==
-    /\ networkChange' = Append(networkChange, [changes |-> c, status |-> Pending])
-    /\ UNCHANGED <<nodeVars, deviceChange, deviceVars>>
+    /\ networkChange' = Append(networkChange, [changes |-> c, status |-> Pending, result |-> Nil])
+    /\ configCount' = configCount + 1
+    /\ UNCHANGED <<nodeVars, deviceChange, deviceVars, electionCount>>
 
 ----
 (*
@@ -134,7 +149,7 @@ NetworkSchedulerNetworkChange(n, c) ==
            /\ networkChange' = [networkChange EXCEPT ![c].status = Applying]
        ELSE
            /\ UNCHANGED <<networkChange>>
-    /\ UNCHANGED <<nodeVars, deviceChange, deviceVars>>
+    /\ UNCHANGED <<nodeVars, deviceChange, deviceVars, constraintVars>>
 
 ----
 (*
@@ -164,7 +179,11 @@ HasDeviceChange(d, c) ==
 
 \* Add change c on device s with status s
 AddDeviceChange(d, c, s) ==
-    Append(deviceChange[d], [network |-> c, status |-> s, value |-> networkChange[c].changes[d]])
+    Append(deviceChange[d], [
+        network |-> c, 
+        status |-> s, 
+        value |-> networkChange[c].changes[d], 
+        result |-> Nil])
 
 \* Update change c on device d to status s
 UpdateDeviceChange(d, c, s) ==
@@ -183,8 +202,8 @@ SetDeviceChange(d, c, s) ==
 
 \* Return the set of all device changes for network change c
 DeviceChanges(c) ==
-    {d \in DOMAIN networkChange[c].changes :
-        {x \in deviceChange[d] : deviceChange[d][x].network = c}}
+    {deviceChange[d][CHOOSE x \in DOMAIN deviceChange[d] : deviceChange[d][x].network = c] :
+        d \in {d \in DOMAIN networkChange[c].changes : HasDeviceChange(d, c)}}
 
 \* Return a boolean indicating whether all device changes for network change c are complete
 DeviceChangesComplete(c) ==
@@ -204,7 +223,7 @@ NetworkControllerNetworkChange(n, c) ==
               /\ deviceChange' = [d \in Device |-> SetDeviceChange(d, c, Applying)]
            \/ /\ change.status = Complete
               /\ UNCHANGED <<deviceChange>>
-    /\ UNCHANGED <<nodeVars, networkChange, deviceVars>>
+    /\ UNCHANGED <<nodeVars, networkChange, deviceVars, constraintVars>>
 
 \* Node n handles a device configuration change c
 NetworkControllerDeviceChange(n, d, c) ==
@@ -226,7 +245,7 @@ NetworkControllerDeviceChange(n, d, c) ==
                     /\ UNCHANGED <<networkChange>>
            \/ /\ change.status # Complete
               /\ UNCHANGED <<networkChange>>
-    /\ UNCHANGED <<nodeVars, deviceChange, deviceVars>>
+    /\ UNCHANGED <<nodeVars, deviceChange, deviceVars, constraintVars>>
 
 ----
 (*
@@ -258,28 +277,34 @@ DeviceControllerDeviceChange(n, d, c) ==
     /\ LET change == deviceChange[d][c]
        IN
            \/ /\ change.status = Applying
-              /\ deviceQueue' = [deviceQueue EXCEPT ![d] = Append(deviceQueue[d], deviceChange[d][c])]
+              /\ deviceQueue' = [deviceQueue EXCEPT ![d] = Append(deviceQueue[d], c)]
            \/ /\ change.status # Applying
               /\ UNCHANGED <<deviceQueue>>
-    /\ UNCHANGED <<nodeVars, configVars, deviceState>>
+    /\ UNCHANGED <<nodeVars, configVars, deviceState, constraintVars>>
 
 \* Return a sequence with the head removed
 Pop(q) == SubSeq(q, 2, Len(q))
 
 \* Mark change c on device d succeeded
-SucceedChange(d, c) ==
-    /\ deviceChange' = [deviceChange EXCEPT ![d] = [deviceChange[d] EXCEPT ![c] = [
-                            deviceChange[d][c] EXCEPT !.status = Complete, !.result = Succeeded]]]
-    /\ deviceState' = [deviceState EXCEPT ![d] = deviceQueue[d][1]]
+SucceedChange(d) ==
+    /\ Len(deviceQueue[d]) > 0
+    /\ deviceChange' = [deviceChange EXCEPT ![d] = [deviceChange[d] EXCEPT ![deviceQueue[d][1]] = [
+                            deviceChange[d][deviceQueue[d][1]] EXCEPT 
+                                !.status = Complete,
+                                !.result = Succeeded]]]
+    /\ deviceState' = [deviceState EXCEPT ![d] = deviceChange[d][deviceQueue[d][1]].network]
     /\ deviceQueue' = [deviceQueue EXCEPT ![d] = Pop(deviceQueue[d])]
-    /\ UNCHANGED <<nodeVars, networkChange>>
+    /\ UNCHANGED <<nodeVars, networkChange, constraintVars>>
 
 \* Mark change c on device d failed
-FailChange(d, c) ==
-    /\ deviceChange' = [deviceChange EXCEPT ![d] = [deviceChange[d] EXCEPT ![c] = [
-                            deviceChange[d][c] EXCEPT !.status = Complete, !.result = Failed]]]
+FailChange(d) ==
+    /\ Len(deviceQueue[d]) > 0
+    /\ deviceChange' = [deviceChange EXCEPT ![d] = [deviceChange[d] EXCEPT ![deviceQueue[d][1]] = [
+                            deviceChange[d][deviceQueue[d][1]] EXCEPT 
+                                !.status = Complete, 
+                                !.result = Failed]]]
     /\ deviceQueue' = [deviceQueue EXCEPT ![d] = Pop(deviceQueue[d])]
-    /\ UNCHANGED <<nodeVars, networkChange, deviceState>>
+    /\ UNCHANGED <<nodeVars, networkChange, deviceState, constraintVars>>
 
 ----
 (*
@@ -292,7 +317,9 @@ Init ==
     /\ networkChange = <<>>
     /\ deviceChange = [d \in Device |-> <<>>]
     /\ deviceQueue = [d \in Device |-> <<>>]
-    /\ deviceState = [d \in Device |-> Nil]
+    /\ deviceState = [d \in Device |-> Zero]
+    /\ electionCount = 0
+    /\ configCount = 0
 
 Next ==
     \/ \E d \in SUBSET Device : 
@@ -319,15 +346,13 @@ Next ==
              \E c \in DOMAIN deviceChange[d] :
                 DeviceControllerDeviceChange(n, d, c)
     \/ \E d \in Device :
-          \E c \in DOMAIN deviceQueue[d] :
-             SucceedChange(d, c)
+          SucceedChange(d)
     \/ \E d \in Device :
-          \E c \in DOMAIN deviceQueue[d] :
-             FailChange(d, c)
+          FailChange(d)
 
 Spec == Init /\ [][Next]_vars
 
 =============================================================================
 \* Modification History
-\* Last modified Sun Sep 29 01:55:52 PDT 2019 by jordanhalterman
+\* Last modified Sun Sep 29 21:12:22 PDT 2019 by jordanhalterman
 \* Created Fri Sep 27 13:14:24 PDT 2019 by jordanhalterman
