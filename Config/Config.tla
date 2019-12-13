@@ -36,10 +36,10 @@ CONSTANT Device
 CONSTANT Nil
 
 \* Per-node election state
-VARIABLE leadership
+VARIABLE leader
 
 \* Per-node per-device election state
-VARIABLE mastership
+VARIABLE master
 
 \* A sequence of network-wide configuration changes
 \* Each change contains a record of 'changes' for each device
@@ -65,7 +65,7 @@ VARIABLE connectionCount
 ----
 
 \* Node variables
-nodeVars == <<leadership, mastership>>
+nodeVars == <<leader, master>>
 
 \* Configuration variables
 configVars == <<networkChange, deviceChange>>
@@ -88,15 +88,15 @@ of leadership changes is irrelevant to the correctness of the spec.
 
 \* Set the leader for node n to l
 SetNodeLeader(n, l) ==
-    /\ leadership' = [leadership EXCEPT ![n] = n = l]
+    /\ leader' = [leader EXCEPT ![n] = n = l]
     /\ electionCount' = electionCount + 1
-    /\ UNCHANGED <<mastership, configVars, deviceVars, configCount, connectionCount>>
+    /\ UNCHANGED <<master, configVars, deviceVars, configCount, connectionCount>>
 
 \* Set the master for device d on node n to l
 SetDeviceMaster(n, d, l) ==
-    /\ mastership' = [mastership EXCEPT ![n] = [mastership[n] EXCEPT ![d] = n = l]]
+    /\ master' = [master EXCEPT ![n] = [master[n] EXCEPT ![d] = n = l]]
     /\ electionCount' = electionCount + 1
-    /\ UNCHANGED <<leadership, configVars, deviceVars, configCount, connectionCount>>
+    /\ UNCHANGED <<leader, configVars, deviceVars, configCount, connectionCount>>
 
 ----
 (*
@@ -284,7 +284,7 @@ DeviceChangesComplete(c) ==
 
 \* Reconcile a network change state
 ReconcileNetworkChange(n, c) ==
-    /\ leadership[n] = TRUE
+    /\ leader[n]
     /\ networkChange[c].state = Pending
        \* Create device changes if necessary
     /\ \/ /\ ~HasDeviceChanges(c)
@@ -319,6 +319,7 @@ This section models the DeviceChange reconciler.
 *)
 
 ReconcileDeviceChange(n, d, c) ==
+    /\ master[d][n]
     /\ deviceChange[d][c].state = Pending
     /\ deviceChange[d][c].attempt > 0
     /\ \/ /\ deviceState[d] = Connected
@@ -353,8 +354,8 @@ Init and next state predicates
 *)
 
 Init ==
-    /\ leadership = [n \in Node |-> FALSE]
-    /\ mastership = [n \in Node |-> [d \in Device |-> FALSE]]
+    /\ leader = [n \in Node |-> FALSE]
+    /\ master = [n \in Node |-> [d \in Device |-> FALSE]]
     /\ networkChange = <<>>
     /\ deviceChange = [d \in Device |-> [x \in {} |-> [phase |-> Change, state |-> Pending]]]
     /\ deviceState = [d \in Device |-> Disconnected]
@@ -394,5 +395,5 @@ Spec == Init /\ [][Next]_vars
 
 =============================================================================
 \* Modification History
-\* Last modified Thu Dec 12 17:34:06 PST 2019 by jordanhalterman
+\* Last modified Thu Dec 12 17:37:01 PST 2019 by jordanhalterman
 \* Created Fri Sep 27 13:14:24 PDT 2019 by jordanhalterman
