@@ -201,7 +201,8 @@ CreateDeviceChange(d, c) ==
                 IF deviceChange[d][c].state = Complete THEN
                     deviceChange[d][c]
                 ELSE
-                    [deviceChange[d] EXCEPT ![c].attempt = networkChange[c].attempt, ![c].state = Pending]
+                    [deviceChange[d] EXCEPT ![c].attempt = networkChange[c].attempt,
+                                            ![c].state = Pending]
             ELSE
                 [x \in {c} |-> [
                     phase   |-> networkChange[c].phase,
@@ -213,27 +214,73 @@ CreateDeviceChange(d, c) ==
 
 \* Add or update device changes for the given network change
 CreateDeviceChanges(c) ==
-    /\ deviceChange' = [d \in DOMAIN deviceChange |-> CreateDeviceChange(d, c)]
+    deviceChange' = [d \in DOMAIN deviceChange |-> CreateDeviceChange(d, c)]
+
+\* Rollback device change c for device d
+RollbackDeviceChange(d, c) ==
+    IF c \in DOMAIN deviceChange[d] THEN
+        [deviceChange[d] EXCEPT ![c].phase = Rollback, ![c].state = Pending]
+    ELSE
+        deviceChange[d]
+
+\* Roll back device changes
+RollbackDeviceChanges(c) ==
+    deviceChange' = [d \in DOMAIN deviceChange |-> RollbackDeviceChange(d, c)]
 
 \* Return a boolean indicating whether the given device change is Failed
 IsFailedDeviceChange(d, c) ==
+    \/ deviceChange[d][c].phase = Change
+    \/ deviceChange[d][c].attempt = 0
+    \/ /\ deviceChange[d][c].attempt = networkChange[c].attempt
+       /\ deviceChange[d][c].state = Failed
+
+IsDeviceChangeRollbackFailed(d, c) ==
     /\ c \in DOMAIN deviceChange[d]
-    /\ \/ deviceChange[d][c].attempt = 0
-       \/ /\ deviceChange[d][c].attempt = networkChange[c].attempt
-          /\ deviceChange[d][c].state = Failed
+    /\ deviceChange[d][c].attempt = networkChange[c].attempt
+    /\ deviceChange[d][c].phase = Rollback
+    /\ deviceChange[d][c].state = Failed
+
+IsDeviceChangeRollbackComplete(d, c) ==
+    /\ c \in DOMAIN deviceChange[d]
+    /\ deviceChange[d][c].attempt = networkChange[c].attempt
+    /\ deviceChange[d][c].phase = Rollback
+    /\ deviceChange[d][c].state = Complete
 
 \* Return a boolean indicating whether the given device change is Complete
 IsCompleteDeviceChange(d, c) ==
-    /\ c \in DOMAIN deviceChange[d]
+    /\ deviceChange[d][c].phase = Change
     /\ deviceChange[d][c].state = Complete
+
+\* Return a boolean indicating whether the given device change rollback is Complete
+IsCompleteDeviceRollback(d, c) ==
+    /\ deviceChange[d][c].phase = Rollback
+    /\ deviceChange[d][c].state = Complete
+
+\* Return a boolean indicating whether any device change is Complete for the given network change
+HasCompleteDeviceChanges(c) ==
+    Cardinality({d \in DOMAIN deviceChange : 
+       /\ c \in DOMAIN deviceChange[d] 
+       /\ IsCompleteDeviceChange(d, c)}) # 0
 
 \* Return a boolean indicating whether any device change is Failed for the given network change
 HasFailedDeviceChanges(c) ==
-    Cardinality({d \in DOMAIN deviceChange : IsFailedDeviceChange(d, c)}) # 0
+    Cardinality({d \in DOMAIN deviceChange : 
+       /\ c \in DOMAIN deviceChange[d] 
+       /\ IsFailedDeviceChange(d, c)}) # 0
+
+\* Return a boolean indicating whether all device changes have been rolled back for the given network change
+DeviceChangesRolledBack(c) ==
+    Cardinality({d \in DOMAIN deviceChange : 
+       /\ c \in DOMAIN deviceChange[d] 
+       /\ IsCompleteDeviceRollback(d, c)}) =
+           Cardinality(DOMAIN networkChange[c].changes)
 
 \* Return a boolean indicating whether all device changes are Complete for the given network change
 DeviceChangesComplete(c) ==
-    Cardinality({d \in DOMAIN deviceChange : IsCompleteDeviceChange(d, c)}) = Cardinality(DOMAIN networkChange[c].changes)
+    Cardinality({d \in DOMAIN deviceChange : 
+       /\ c \in DOMAIN deviceChange[d] 
+       /\ IsCompleteDeviceChange(d, c)}) =
+          Cardinality(DOMAIN networkChange[c].changes)
 
 \* Reconcile a network change state
 ReconcileNetworkChange(n, c) ==
@@ -246,16 +293,23 @@ ReconcileNetworkChange(n, c) ==
        \/ /\ HasDeviceChanges(c)
              \* Reconcile a change
           /\ \/ /\ networkChange[c].phase = Change
+                   \* If a device change failed rollback any applied changes
                 /\ \/ /\ HasFailedDeviceChanges(c)
-                      /\ CanApplyNetworkChange(c)
-                      /\ networkChange' = [networkChange EXCEPT ![c].attempt = networkChange[c].attempt + 1]
-                      /\ UNCHANGED <<deviceChange>>
+                      /\ RollbackDeviceChanges(c)
+                      /\ UNCHANGED <<networkChange>>
+                   \* If device changes have been rolled back, increment the attempt
+                   \/ /\ DeviceChangesRolledBack(c)
+                      /\ networkChange' = [networkChange EXCEPT 
+                            ![c].attempt = networkChange[c].attempt + 1]
+                   \* If device changes are complete, complete the network change
                    \/ /\ DeviceChangesComplete(c)
-                      /\ networkChange' = [networkChange EXCEPT ![c].state = Complete]
+                      /\ networkChange' = [networkChange EXCEPT 
+                            ![c].state = Complete]
                       /\ UNCHANGED <<deviceChange>>
              \* Reconcile a rollback
              \/ /\ networkChange[c].phase = Rollback
-                /\ networkChange' = [networkChange EXCEPT ![c].state = Complete]
+                /\ networkChange' = [networkChange EXCEPT 
+                       ![c].state = Complete]
     /\ UNCHANGED <<nodeVars, deviceVars, constraintVars>>
 
 ----
@@ -268,9 +322,11 @@ ReconcileDeviceChange(n, d, c) ==
     /\ deviceChange[d][c].state = Pending
     /\ deviceChange[d][c].attempt > 0
     /\ \/ /\ deviceState[d] = Connected
-          /\ deviceChange' = [deviceChange EXCEPT ![d] = [deviceChange[d] EXCEPT ![c].state = Complete]]
+          /\ deviceChange' = [deviceChange EXCEPT 
+                ![d] = [deviceChange[d] EXCEPT ![c].state = Complete]]
        \/ /\ deviceState[d] = Disconnected
-          /\ deviceChange' = [deviceChange EXCEPT ![d] = [deviceChange[d] EXCEPT ![c].state = Failed]]
+          /\ deviceChange' = [deviceChange EXCEPT 
+                ![d] = [deviceChange[d] EXCEPT ![c].state = Failed]]
     /\ UNCHANGED <<nodeVars, networkChange, deviceVars, constraintVars>>
 
 ----
@@ -338,5 +394,5 @@ Spec == Init /\ [][Next]_vars
 
 =============================================================================
 \* Modification History
-\* Last modified Thu Dec 12 15:15:54 PST 2019 by jordanhalterman
+\* Last modified Thu Dec 12 17:34:06 PST 2019 by jordanhalterman
 \* Created Fri Sep 27 13:14:24 PDT 2019 by jordanhalterman
