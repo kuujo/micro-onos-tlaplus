@@ -107,11 +107,11 @@ This section models the northbound API for the configuration service.
 SubmitChange(c) ==
     /\ Cardinality(DOMAIN c) > 0
     /\ networkChange' = Append(networkChange, [
-                            phase   |-> Change,
-                            changes |-> c, 
-                            value   |-> Len(networkChange),
-                            state   |-> Pending,
-                            attempt |-> 0])
+                            phase       |-> Change,
+                            changes     |-> c, 
+                            value       |-> Len(networkChange),
+                            state       |-> Pending,
+                            incarnation |-> 0])
     /\ configCount' = configCount + 1
     /\ UNCHANGED <<nodeVars, deviceChange, deviceVars, electionCount, connectionCount>>
 
@@ -160,19 +160,19 @@ ConnectedDevices(c) == {d \in DOMAIN networkChange[c].changes : deviceState[d] =
 CanApplyNetworkChange(c) ==
     /\ Cardinality(ConnectedDevices(c) \cap NetworkChangeDevices(c)) # 0
     /\ Cardinality(NetworkChangeDevices(c) \cap PriorIncompleteDevices(c)) = 0
-    /\ \/ networkChange[c].attempt = 0
+    /\ \/ networkChange[c].incarnation = 0
        \/ Cardinality({d \in DOMAIN networkChange[c].changes : 
-             /\ deviceChange[d][c].attempt = networkChange[c].attempt
+             /\ deviceChange[d][c].incarnation = networkChange[c].incarnation
              /\ deviceChange[d][c].phase = Rollback 
              /\ deviceChange[d][c].state = Complete}) =
                    Cardinality(DOMAIN networkChange[c].changes)
 
 \* Return a boolean indicating whether a change exists for the given device
 \* If the device is modified by the change, it must contain a device change
-\* that's either Complete or with the same 'attempt' as the network change.
+\* that's either Complete or with the same 'incarnation' as the network change.
 HasDeviceChange(d, c) ==
     /\ c \in DOMAIN deviceChange[d]
-    /\ deviceChange[d][c].attempt = networkChange[c].attempt
+    /\ deviceChange[d][c].incarnation = networkChange[c].incarnation
 
 \* Return a boolean indicating whether device changes have been propagated
 \* for the given network change
@@ -181,28 +181,28 @@ HasDeviceChanges(c) ==
        Cardinality(DOMAIN networkChange[c].changes)
 
 \* Add or update the given device changes for the given network change.
-\* If a device change already exists, update the 'attempt' field.
+\* If a device change already exists, update the 'incarnation' field.
 CreateDeviceChange(d, c) ==
     IF Cardinality(DOMAIN deviceChange[d]) = 0 THEN
         [x \in {c} |-> [
-                    phase   |-> networkChange[c].phase,
-                    state   |-> Pending, 
-                    value   |-> networkChange[c].value,
-                    attempt |-> networkChange[c].attempt]]
+                    phase       |-> networkChange[c].phase,
+                    state       |-> Pending, 
+                    value       |-> networkChange[c].value,
+                    incarnation |-> networkChange[c].incarnation]]
     ELSE
         IF d \in DOMAIN networkChange[c].changes THEN
             IF c \in DOMAIN deviceChange[d] THEN
                 IF deviceChange[d][c].state = Complete THEN
                     deviceChange[d][c]
                 ELSE
-                    [deviceChange[d] EXCEPT ![c].attempt = networkChange[c].attempt,
+                    [deviceChange[d] EXCEPT ![c].incarnation = networkChange[c].incarnation,
                                             ![c].state = Pending]
             ELSE
                 [x \in {c} |-> [
-                    phase   |-> networkChange[c].phase,
-                    state   |-> Pending, 
-                    value   |-> networkChange[c].value,
-                    attempt |-> networkChange[c].attempt]] @@ deviceChange[d]
+                    phase       |-> networkChange[c].phase,
+                    state       |-> Pending, 
+                    value       |-> networkChange[c].value,
+                    incarnation |-> networkChange[c].incarnation]] @@ deviceChange[d]
         ELSE
             deviceChange[d]
 
@@ -228,13 +228,13 @@ RollbackDeviceChanges(c) ==
 \* Return a boolean indicating whether the given device change is Failed
 IsFailedDeviceChange(d, c) ==
     /\ c \in DOMAIN deviceChange[d]
-    /\ deviceChange[d][c].attempt = networkChange[c].attempt
+    /\ deviceChange[d][c].incarnation = networkChange[c].incarnation
     /\ deviceChange[d][c].state = Failed
 
 \* Return a boolean indicating whether the given device change is Complete
 IsCompleteDeviceChange(d, c) ==
     /\ c \in DOMAIN deviceChange[d]
-    /\ deviceChange[d][c].attempt = networkChange[c].attempt
+    /\ deviceChange[d][c].incarnation = networkChange[c].incarnation
     /\ deviceChange[d][c].phase = Change
     /\ deviceChange[d][c].state = Complete
 
@@ -260,7 +260,7 @@ ReconcileNetworkChange(n, c) ==
           /\ \/ /\ networkChange[c].phase = Change
                 /\ \/ /\ CanApplyNetworkChange(c)
                       /\ networkChange' = [networkChange EXCEPT 
-                            ![c].attempt = networkChange[c].attempt + 1]
+                            ![c].incarnation = networkChange[c].incarnation + 1]
                       /\ UNCHANGED <<deviceChange>>
                    \/ /\ DeviceChangesComplete(c)
                       /\ networkChange' = [networkChange EXCEPT 
@@ -285,7 +285,7 @@ This section models the DeviceChange reconciler.
 ReconcileDeviceChange(n, d, c) ==
     /\ master[n][d]
     /\ deviceChange[d][c].state = Pending
-    /\ deviceChange[d][c].attempt > 0
+    /\ deviceChange[d][c].incarnation > 0
     /\ \/ /\ deviceState[d] = Connected
           /\ deviceChange' = [deviceChange EXCEPT 
                 ![d] = [deviceChange[d] EXCEPT ![c].state = Complete]]
@@ -359,5 +359,5 @@ Spec == Init /\ [][Next]_vars
 
 =============================================================================
 \* Modification History
-\* Last modified Fri Dec 13 17:43:05 PST 2019 by jordanhalterman
+\* Last modified Fri Dec 13 20:31:35 PST 2019 by jordanhalterman
 \* Created Fri Sep 27 13:14:24 PDT 2019 by jordanhalterman
