@@ -115,6 +115,12 @@ Learn(c) ==
     /\ events' = [events EXCEPT ![c] = SubSeq(events[c], 2, Len(events[c]))]
     /\ UNCHANGED <<state, version, reads>>
 
+\* Evict a map entry from the cache
+Evict(c, k) ==
+    /\ k \in DOMAIN cache[c]
+    /\ cache' = [cache EXCEPT ![c] = DropKey(cache[c], k)]
+    /\ UNCHANGED <<state, events, version, reads>>
+
 ----
 
 Init ==
@@ -129,10 +135,11 @@ Next ==
     \/ \E c \in Client : \E k \in Key : Get(c, k)
     \/ \E c \in Client : \E k \in Key : Remove(c, k)
     \/ \E c \in Client : Learn(c)
+    \/ \E c \in Client : \E k \in Key : Evict(c, k)
 
 Spec == Init /\ [][Next]_<<vars>>
 
 =============================================================================
 \* Modification History
-\* Last modified Tue Feb 11 03:26:28 PST 2020 by jordanhalterman
+\* Last modified Tue Feb 11 09:50:05 PST 2020 by jordanhalterman
 \* Created Mon Feb 10 23:01:48 PST 2020 by jordanhalterman
