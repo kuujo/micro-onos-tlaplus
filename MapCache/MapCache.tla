@@ -17,6 +17,12 @@ VARIABLE state
 \* The cache state
 VARIABLE cache
 
+\* The current cache version
+VARIABLE cacheVersion
+
+\* The highest version read by the client
+VARIABLE readVersion
+
 \* A sequence of update events
 VARIABLE events
 
@@ -26,14 +32,15 @@ VARIABLE version
 \* The history of reads for the client; used by the model checker to verify sequential consistency
 VARIABLE reads
 
-vars == <<state, cache, events, version>>
+vars == <<state, cache, cacheVersion, readVersion, events, version, reads>>
 
 ----
 
 \* The type invariant checks that the client's reads never go back in time
 TypeInvariant ==
-    /\ \A r \in DOMAIN reads :
-          r > 1 => reads[r] > reads[r-1]
+    /\ \A k \in Key :
+       /\ \A r \in DOMAIN reads[k] :
+             r > 1 => reads[k][r] >= reads[k][r-1]
 
 ----
 
@@ -67,15 +74,19 @@ events are enqueued for the client, and the learner updates the cache.
 
 \* Get a value/version for a key in the map
 Get(k) ==
-    /\ \/ /\ k \in DOMAIN cache
-          /\ reads' = Append(reads, cache[k].version)
+    /\ \/ /\ cacheVersion >= readVersion
+          /\ k \in DOMAIN cache
+          /\ reads' = [reads EXCEPT ![k] = Append(reads[k], cache[k].version)]
+          /\ UNCHANGED <<readVersion>>
        \/ /\ k \notin DOMAIN cache
           /\ k \in DOMAIN state
-          /\ reads' = Append(reads, state[k].version)
+          /\ reads' = [reads EXCEPT ![k] = Append(reads[k], state[k].version)]
+          /\ readVersion' = state[k].version
        \/ /\ k \notin DOMAIN cache
           /\ k \notin DOMAIN state
-          /\ reads' = Append(reads, version)
-    /\ UNCHANGED <<state, cache, events, version>>
+          /\ reads' = [reads EXCEPT ![k] = Append(reads[k], version)]
+          /\ readVersion' = version
+    /\ UNCHANGED <<state, cache, cacheVersion, events, version>>
 
 \* Put a key/value pair in the map
 Put(k, v) ==
@@ -85,7 +96,7 @@ Put(k, v) ==
           /\ state' = PutEntry(state, entry)
           /\ events' = Append(events, entry)
           /\ Evict(k)
-    /\ UNCHANGED <<reads>>
+    /\ UNCHANGED <<cacheVersion, readVersion, reads>>
 
 \* Remove a key from the map
 Remove(k) ==
@@ -95,14 +106,15 @@ Remove(k) ==
           /\ state' = DropKey(state, k)
           /\ events' = Append(events, entry)
           /\ Evict(k)
-    /\ UNCHANGED <<reads>>
+    /\ UNCHANGED <<cacheVersion, readVersion, reads>>
 
 \* Learn of a map update
 Learn ==
     /\ Cardinality(DOMAIN events) > 0
     /\ Cache(events[1])
+    /\ cacheVersion' = events[1].version
     /\ events' = SubSeq(events, 2, Len(events))
-    /\ UNCHANGED <<state, version, reads>>
+    /\ UNCHANGED <<state, version, readVersion, reads>>
 
 ----
 
@@ -111,7 +123,9 @@ Init ==
     /\ cache = [i \in {} |-> [key |-> Nil, value |-> Nil, version |-> Nil]]
     /\ events = [i \in {} |-> [key |-> Nil, value |-> Nil, version |-> Nil]]
     /\ version = 0
-    /\ reads = [i \in {} |-> 0]
+    /\ cacheVersion = 0
+    /\ readVersion = 0
+    /\ reads = [k \in Key |-> <<>>]
 
 Next ==
     \/ \E k \in Key : 
@@ -124,5 +138,5 @@ Spec == Init /\ [][Next]_<<vars>>
 
 =============================================================================
 \* Modification History
-\* Last modified Tue Feb 11 00:50:25 PST 2020 by jordanhalterman
+\* Last modified Tue Feb 11 01:49:12 PST 2020 by jordanhalterman
 \* Created Mon Feb 10 23:01:48 PST 2020 by jordanhalterman
