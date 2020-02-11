@@ -58,12 +58,6 @@ PutEntry(s, e) ==
     ELSE
         s @@ (e.key :> e)
 
-\* Cache a map entry
-Cache(entry) == cache' = PutEntry(cache, entry)
-
-\* Evict a map key from the cache
-Evict(k) == cache' = DropKey(cache, k)
-
 ----
 
 (*
@@ -95,24 +89,30 @@ Put(k, v) ==
        IN
           /\ state' = PutEntry(state, entry)
           /\ events' = Append(events, entry)
-          /\ Evict(k)
+          /\ cache' = DropKey(cache, k)
     /\ UNCHANGED <<cacheVersion, readVersion, reads>>
 
 \* Remove a key from the map
 Remove(k) ==
+    /\ k \in DOMAIN state
     /\ version' = version + 1
-    /\ LET entry == [key |-> k, version |-> version']
+    /\ LET entry == [key |-> k, value |-> Nil, version |-> version']
        IN
           /\ state' = DropKey(state, k)
           /\ events' = Append(events, entry)
-          /\ Evict(k)
+          /\ cache' = DropKey(cache, k)
     /\ UNCHANGED <<cacheVersion, readVersion, reads>>
 
 \* Learn of a map update
 Learn ==
     /\ Cardinality(DOMAIN events) > 0
-    /\ Cache(events[1])
-    /\ cacheVersion' = events[1].version
+    /\ LET entry == events[1]
+       IN
+          /\ \/ /\ entry.value # Nil
+                /\ cache' = PutEntry(cache, entry)
+             \/ /\ entry.value = Nil
+                /\ cache' = DropKey(cache, entry.key)
+          /\ cacheVersion' = entry.version
     /\ events' = SubSeq(events, 2, Len(events))
     /\ UNCHANGED <<state, version, readVersion, reads>>
 
@@ -128,8 +128,7 @@ Init ==
     /\ reads = [k \in Key |-> <<>>]
 
 Next ==
-    \/ \E k \in Key : 
-          \E v \in Value : Put(k, v)
+    \/ \E k \in Key : \E v \in Value : Put(k, v)
     \/ \E k \in Key : Get(k)
     \/ \E k \in Key : Remove(k)
     \/ Learn
@@ -138,5 +137,5 @@ Spec == Init /\ [][Next]_<<vars>>
 
 =============================================================================
 \* Modification History
-\* Last modified Tue Feb 11 01:49:12 PST 2020 by jordanhalterman
+\* Last modified Tue Feb 11 02:22:52 PST 2020 by jordanhalterman
 \* Created Mon Feb 10 23:01:48 PST 2020 by jordanhalterman
