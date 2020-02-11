@@ -20,6 +20,9 @@ VARIABLE state
 \* The cache state
 VARIABLE cache
 
+\* A bag of pending cache entries
+VARIABLE pending
+
 \* A sequence of update events
 VARIABLE events
 
@@ -74,7 +77,7 @@ Get(c, k) ==
        \/ /\ k \notin DOMAIN cache[c]
           /\ k \notin DOMAIN state
           /\ reads' = [reads EXCEPT ![c][k] = Append(reads[c][k], version)]
-    /\ UNCHANGED <<state, cache, events, version>>
+    /\ UNCHANGED <<state, pending, cache, cache, events, version>>
 
 \* Put a key/value pair in the map
 Put(c, k, v) ==
@@ -83,8 +86,8 @@ Put(c, k, v) ==
        IN
           /\ state' = PutEntry(state, entry)
           /\ events' = [i \in Client |-> Append(events[i], entry)]
-          /\ cache' = [cache EXCEPT ![c] = PutEntry(cache[c], entry)]
-    /\ UNCHANGED <<reads>>
+          /\ pending' = [pending EXCEPT ![c] = pending[c] @@ (entry.version :> entry)]
+    /\ UNCHANGED <<cache, reads>>
 
 \* Remove a key from the map
 Remove(c, k) ==
@@ -94,8 +97,19 @@ Remove(c, k) ==
        IN
           /\ state' = DropKey(state, k)
           /\ events' = [i \in Client |-> Append(events[i], entry)]
-          /\ cache' = [cache EXCEPT ![c] = DropKey(cache[c], k)]
-    /\ UNCHANGED <<reads>>
+          /\ pending' = [pending EXCEPT ![c] = pending[c] @@ (entry.version :> entry)]
+    /\ UNCHANGED <<cache, reads>>
+
+\* Cache an entry in the map
+Cache(c, e) ==
+    /\ LET entry == pending[c][e]
+       IN
+          /\ \/ /\ entry.value # Nil
+                /\ cache' = [cache EXCEPT ![c] = PutEntry(cache[c], entry)]
+             \/ /\ entry.value = Nil
+                /\ cache' = [cache EXCEPT ![c] = DropKey(cache[c], entry.key)]
+          /\ pending' = [pending EXCEPT ![c] = [v \in DOMAIN pending[c] \ {entry.version} |-> pending[c][v]]]
+    /\ UNCHANGED <<state, events, version, reads>>
 
 \* Learn of a map update
 Learn(c) ==
@@ -113,33 +127,49 @@ Learn(c) ==
                    /\ entry.version <= cache[c][entry.key].version
              /\ UNCHANGED <<cache>>
     /\ events' = [events EXCEPT ![c] = SubSeq(events[c], 2, Len(events[c]))]
-    /\ UNCHANGED <<state, version, reads>>
+    /\ UNCHANGED <<state, pending, version, reads>>
 
 \* Evict a map entry from the cache
 Evict(c, k) ==
     /\ k \in DOMAIN cache[c]
     /\ cache' = [cache EXCEPT ![c] = DropKey(cache[c], k)]
-    /\ UNCHANGED <<state, events, version, reads>>
+    /\ UNCHANGED <<state, pending, events, version, reads>>
 
 ----
 
 Init ==
-    /\ state = [i \in {} |-> [key |-> Nil, value |-> Nil, version |-> Nil]]
-    /\ cache = [c \in Client |-> [i \in {} |-> [key |-> Nil, value |-> Nil, version |-> Nil]]]
-    /\ events = [c \in Client |-> [i \in {} |-> [key |-> Nil, value |-> Nil, version |-> Nil]]]
+    /\ LET nilEntry == [key |-> Nil, value |-> Nil, version |-> Nil]
+       IN
+          /\ state = [i \in {} |-> nilEntry]
+          /\ cache = [c \in Client |-> [i \in {} |-> nilEntry]]
+          /\ pending = [c \in Client |-> [i \in {} |-> nilEntry]]
+          /\ events = [c \in Client |-> [i \in {} |-> nilEntry]]
     /\ version = 0
     /\ reads = [c \in Client |-> [k \in Key |-> <<>>]]
 
 Next ==
-    \/ \E c \in Client : \E k \in Key : \E v \in Value : Put(c, k, v)
-    \/ \E c \in Client : \E k \in Key : Get(c, k)
-    \/ \E c \in Client : \E k \in Key : Remove(c, k)
-    \/ \E c \in Client : Learn(c)
-    \/ \E c \in Client : \E k \in Key : Evict(c, k)
+    \/ \E c \in Client : 
+          \E k \in Key : 
+             Get(c, k)
+    \/ \E c \in Client : 
+          \E k \in Key : 
+             \E v \in Value : 
+                Put(c, k, v)
+    \/ \E c \in Client : 
+          \E k \in Key : 
+             Remove(c, k)
+    \/ \E c \in Client : 
+          \E e \in DOMAIN pending[c] : 
+             Cache(c, e)
+    \/ \E c \in Client : 
+          Learn(c)
+    \/ \E c \in Client : 
+          \E k \in Key : 
+             Evict(c, k)
 
 Spec == Init /\ [][Next]_<<vars>>
 
 =============================================================================
 \* Modification History
-\* Last modified Tue Feb 11 09:50:05 PST 2020 by jordanhalterman
+\* Last modified Tue Feb 11 10:21:59 PST 2020 by jordanhalterman
 \* Created Mon Feb 10 23:01:48 PST 2020 by jordanhalterman
