@@ -5,25 +5,27 @@ EXTENDS Naturals, FiniteSets, Sequences, TLC
 \* An empty value
 CONSTANT Nil
 
-\* The set of clients
+\* The set of clients to model
 CONSTANT Client
 
-\* The set of possible keys
+\* The set of possible keys in the map
 CONSTANT Key
 
-\* The set of possible values
+\* The set of possible values in the map
 CONSTANT Value
 
-\* An update entry type
+\* An update entry identifier
 CONSTANT Update
 
-\* A tombstone entry type
+\* A tombstone entry identifier
 CONSTANT Tombstone
 
-\* The system state
+\* The system state, modelled as a strongly consistent consensus service
+\* using a single mapping of key->value pairs
 VARIABLE state
 
-\* The maximum version assigned to an event
+\* A sequential version number, used by the consensus service to assign logical 
+\* timestamps to entries
 VARIABLE stateVersion
 
 \* The cache state
@@ -32,13 +34,13 @@ VARIABLE cache
 \* The maximum version propagated to the cache
 VARIABLE cacheVersion
 
-\* A bag of pending cache entries
+\* An unordered bag of pending cache entries
 VARIABLE cachePending
 
-\* A sequence of update events
+\* A strongly ordered sequence of update events
 VARIABLE events
 
-\* The history of reads for the client; used by the model checker to verify sequential consistency
+\* The history of reads for the client, used by the model checker to verify sequential consistency
 VARIABLE reads
 
 vars == <<state, stateVersion, cache, cachePending, cacheVersion, events, reads>>
@@ -71,9 +73,10 @@ PutEntry(s, e) ==
 ----
 
 (*
-This section models the cache. When a client updates the map, it defers updates to the
-cache to be performed asynchronously. The cache also listens for events coming from
-other clients.
+This section models the map cache. When a client updates the map, it defers updates to 
+the cache to be performed in a separate step. The cache also listens for events coming 
+from a consensus service, which must provide sequentially consistent event streams.
+Entries are arbitrarily evicted from the cache.
 *)
 
 \* Defer an entry 'e' to be cached asynchronously on client 'c'
@@ -81,6 +84,11 @@ other clients.
 \* concurrent threads by the operating system.
 DeferCache(c, e) ==
     cachePending' = [cachePending EXCEPT ![c] = cachePending[c] @@ (e.version :> e)]
+
+\* Remove a deferred entry 'e' from cache deferrals for client 'c'
+RemoveCacheDeferral(c, e) ==
+    cachePending' = [cachePending EXCEPT ![c] = 
+        [v \in DOMAIN cachePending[c] \ {e.version} |-> cachePending[c][v]]]
 
 \* Cache an entry 'e' on client 'c'
 \* The entry is read from the pending cache entries. An entry will only be updated
@@ -100,10 +108,13 @@ Cache(c, e) ==
                    \/ /\ entry.key \in DOMAIN cache[c]
                       /\ entry.version <= cache[c][entry.key].version
                 /\ UNCHANGED <<cache>>
-          /\ cachePending' = [cachePending EXCEPT ![c] = [v \in DOMAIN cachePending[c] \ {entry.version} |-> cachePending[c][v]]]
+          /\ RemoveCacheDeferral(c, entry)
     /\ UNCHANGED <<state, stateVersion, cacheVersion, events, reads>>
 
 \* Enqueue a cache update event 'e' for all clients
+\* Events are guaranteed to be delivered to clients in the order in which they
+\* occurred in the consensus layer, so we model events as a simple strongly ordered
+\* sequence.
 EnqueueEvent(e) ==
     events' = [i \in Client |-> Append(events[i], e)]
 
@@ -134,8 +145,13 @@ Learn(c) ==
     /\ UNCHANGED <<state, stateVersion, cachePending, reads>>
 
 \* Evict a map key 'k' from the cache of client 'c'
+\* To preserve consistency, each key for each client must be retained until updates 
+\* prior to the key version have been propagated to the client. If keys are evicted
+\* before updates have been propagated to the cache, evicting a key can allow a 
+\* concurrent Put or Remove to cache an older entry.
 Evict(c, k) ==
     /\ k \in DOMAIN cache[c]
+    /\ cache[c][k].version <= cacheVersion[c]
     /\ cache' = [cache EXCEPT ![c] = DropKey(cache[c], k)]
     /\ UNCHANGED <<state, stateVersion, cachePending, cacheVersion, events, reads>>
 
@@ -143,8 +159,13 @@ Evict(c, k) ==
 
 (*
 This section models the method calls for the Map primitive.
-Map entries can be created, updated, deleted, and read. When the map state is changed,
-events are enqueued for the client, and the learner updates the cache.
+Map entries can be created, updated, deleted, and read. The Put and Remove steps
+model writes to a consensus service. When the map is updated, write steps do not
+atomically cache updates but instead defer them to be cached in a separate step.
+This models the reordering of threads by the OS. The Get step models a read of
+either the cache or a consensus service. When reading from the consensus service,
+the Get step does cache entries atomically since reads can be reordered without
+side effects.
 *)
 
 \* Get an entry for key 'k' in the map on client 'c'
@@ -152,6 +173,8 @@ events are enqueued for the client, and the learner updates the cache.
 \* If the key is not present in the cache, read from the system state and update the
 \* cache if the system entry version is greater than the cache version.
 \* If the key is neither present in the cache or the system state, read the cache version.
+\* Note that the state is read and the cache is updated in a single step. To guarantee
+\* consistency, implementations must update the cache before returning.
 Get(c, k) ==
     /\ \/ /\ k \in DOMAIN cache[c]
           /\ reads' = [reads EXCEPT ![c][k] = Append(reads[c][k], cache[c][k].version)]
@@ -160,15 +183,17 @@ Get(c, k) ==
           /\ k \in DOMAIN state
           /\ LET entry == state[k]
              IN
-                /\ \/ /\ entry.version > cacheVersion[c]
-                      /\ cache' = [cache EXCEPT ![c] = PutEntry(cache[c], entry)]
-                   \/ /\ entry.version <= cacheVersion[c]
-                      /\ UNCHANGED <<cache>>
+                /\ cache' = [cache EXCEPT ![c] = PutEntry(cache[c], entry)]
                 /\ reads' = [reads EXCEPT ![c][k] = Append(reads[c][k], state[k].version)]
        \/ /\ k \notin DOMAIN cache[c]
           /\ k \notin DOMAIN state
-          /\ reads' = [reads EXCEPT ![c][k] = Append(reads[c][k], cacheVersion[c])]
-          /\ UNCHANGED <<cache>>
+          /\ LET entry == [type |-> Tombstone, 
+                           key |-> k, 
+                           value |-> Nil, 
+                           version |-> stateVersion]
+             IN 
+                cache' = [cache EXCEPT ![c] = PutEntry(cache[c], entry)]
+          /\ reads' = [reads EXCEPT ![c][k] = Append(reads[c][k], stateVersion)]
     /\ UNCHANGED <<state, stateVersion, cachePending, cacheVersion, events>>
 
 \* Put key 'k' and value 'v' pair in the map on client 'c'
@@ -201,7 +226,10 @@ Remove(c, k) ==
 ----
 
 Init ==
-    /\ LET nilEntry == [type |-> Nil, key |-> Nil, value |-> Nil, version |-> Nil]
+    /\ LET nilEntry == [type |-> Nil,
+                        key |-> Nil, 
+                        value |-> Nil, 
+                        version |-> Nil]
        IN
           /\ state = [i \in {} |-> nilEntry]
           /\ stateVersion = 0
@@ -235,5 +263,5 @@ Spec == Init /\ [][Next]_<<vars>>
 
 =============================================================================
 \* Modification History
-\* Last modified Tue Feb 11 13:30:38 PST 2020 by jordanhalterman
+\* Last modified Wed Feb 12 16:52:38 PST 2020 by jordanhalterman
 \* Created Mon Feb 10 23:01:48 PST 2020 by jordanhalterman
