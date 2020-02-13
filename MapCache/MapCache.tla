@@ -40,19 +40,19 @@ VARIABLE cachePending
 \* A strongly ordered sequence of update events
 VARIABLE events
 
-\* The history of reads for the client, used by the model checker to verify sequential consistency
-VARIABLE reads
+\* The history of history for the client, used by the model checker to verify sequential consistency
+VARIABLE history
 
-vars == <<state, stateVersion, cache, cachePending, cacheVersion, events, reads>>
+vars == <<state, stateVersion, cache, cachePending, cacheVersion, events, history>>
 
 ----
 
-\* The type invariant checks that the client's reads never go back in time
+\* The type invariant checks that the client's history never go back in time
 TypeInvariant ==
     /\ \A c \in Client :
        /\ \A k \in Key :
-          /\ \A r \in DOMAIN reads[c][k] :
-                r > 1 => reads[c][k][r] >= reads[c][k][r-1]
+          /\ \A r \in DOMAIN history[c][k] :
+                r > 1 => history[c][k][r] >= history[c][k][r-1]
 
 ----
 
@@ -81,7 +81,7 @@ Entries are arbitrarily evicted from the cache.
 
 \* Defer an entry 'e' to be cached asynchronously on client 'c'
 \* Updates are deferred in no particular order to model the potential reordering of
-\* concurrent threads by the operating system.
+\* concurrent thhistory by the operating system.
 DeferCache(c, e) ==
     cachePending' = [cachePending EXCEPT ![c] = cachePending[c] @@ (e.version :> e)]
 
@@ -104,12 +104,14 @@ Cache(c, e) ==
                    \/ /\ entry.key \in DOMAIN cache[c]
                       /\ entry.version > cache[c][entry.key].version
                 /\ cache' = [cache EXCEPT ![c] = PutEntry(cache[c], entry)]
+                /\ history' = [history EXCEPT ![c][entry.key] = 
+                      Append(history[c][entry.key], entry.version)]
              \/ /\ \/ entry.version <= cacheVersion[c]
                    \/ /\ entry.key \in DOMAIN cache[c]
                       /\ entry.version <= cache[c][entry.key].version
-                /\ UNCHANGED <<cache>>
+                /\ UNCHANGED <<cache, history>>
           /\ RemoveCacheDeferral(c, entry)
-    /\ UNCHANGED <<state, stateVersion, cacheVersion, events, reads>>
+    /\ UNCHANGED <<state, stateVersion, cacheVersion, events>>
 
 \* Enqueue a cache update event 'e' for all clients
 \* Events are guaranteed to be delivered to clients in the order in which they
@@ -142,7 +144,7 @@ Learn(c) ==
                 /\ UNCHANGED <<cache>>
           /\ cacheVersion' = [cacheVersion EXCEPT ![c] = entry.version]
     /\ events' = [events EXCEPT ![c] = SubSeq(events[c], 2, Len(events[c]))]
-    /\ UNCHANGED <<state, stateVersion, cachePending, reads>>
+    /\ UNCHANGED <<state, stateVersion, cachePending, history>>
 
 \* Evict a map key 'k' from the cache of client 'c'
 \* To preserve consistency, each key for each client must be retained until updates 
@@ -153,19 +155,16 @@ Evict(c, k) ==
     /\ k \in DOMAIN cache[c]
     /\ cache[c][k].version <= cacheVersion[c]
     /\ cache' = [cache EXCEPT ![c] = DropKey(cache[c], k)]
-    /\ UNCHANGED <<state, stateVersion, cachePending, cacheVersion, events, reads>>
+    /\ UNCHANGED <<state, stateVersion, cachePending, cacheVersion, events, history>>
 
 ----
 
 (*
 This section models the method calls for the Map primitive.
 Map entries can be created, updated, deleted, and read. The Put and Remove steps
-model writes to a consensus service. When the map is updated, write steps do not
-atomically cache updates but instead defer them to be cached in a separate step.
-This models the reordering of threads by the OS. The Get step models a read of
-either the cache or a consensus service. When reading from the consensus service,
-the Get step does cache entries atomically since reads can be reordered without
-side effects.
+model writes to a consensus service. Steps do not atomically cache reads/updates
+but instead defer them to be cached in a separate step. This models the reordering 
+of threads by the OS.
 *)
 
 \* Get an entry for key 'k' in the map on client 'c'
@@ -173,28 +172,25 @@ side effects.
 \* If the key is not present in the cache, read from the system state and update the
 \* cache if the system entry version is greater than the cache version.
 \* If the key is neither present in the cache or the system state, read the cache version.
-\* Note that the state is read and the cache is updated in a single step. To guarantee
-\* consistency, implementations must update the cache before returning.
+\* If the step reads from the cache, the cached version is added to the history. Otherwise,
+\* if the step reads from the consensus service, the cache is updated in a separate step
+\* before recording the value.
 Get(c, k) ==
     /\ \/ /\ k \in DOMAIN cache[c]
-          /\ reads' = [reads EXCEPT ![c][k] = Append(reads[c][k], cache[c][k].version)]
-          /\ UNCHANGED <<cache>>
+          /\ history' = [history EXCEPT ![c][k] = Append(history[c][k], cache[c][k].version)]
+          /\ UNCHANGED <<cachePending>>
        \/ /\ k \notin DOMAIN cache[c]
           /\ k \in DOMAIN state
-          /\ LET entry == state[k]
-             IN
-                /\ cache' = [cache EXCEPT ![c] = PutEntry(cache[c], entry)]
-                /\ reads' = [reads EXCEPT ![c][k] = Append(reads[c][k], state[k].version)]
+          /\ DeferCache(c, state[k])
+          /\ UNCHANGED <<history>>
        \/ /\ k \notin DOMAIN cache[c]
           /\ k \notin DOMAIN state
-          /\ LET entry == [type |-> Tombstone, 
-                           key |-> k, 
-                           value |-> Nil, 
-                           version |-> stateVersion]
-             IN 
-                cache' = [cache EXCEPT ![c] = PutEntry(cache[c], entry)]
-          /\ reads' = [reads EXCEPT ![c][k] = Append(reads[c][k], stateVersion)]
-    /\ UNCHANGED <<state, stateVersion, cachePending, cacheVersion, events>>
+          /\ DeferCache(c, [type |-> Tombstone, 
+                            key |-> k, 
+                            value |-> Nil, 
+                            version |-> stateVersion])
+          /\ UNCHANGED <<history>>
+    /\ UNCHANGED <<state, stateVersion, cache, cacheVersion, events>>
 
 \* Put key 'k' and value 'v' pair in the map on client 'c'
 \* Increment the system state version and insert the entry into the system state.
@@ -207,7 +203,7 @@ Put(c, k, v) ==
           /\ state' = PutEntry(state, entry)
           /\ EnqueueEvent(entry)
           /\ DeferCache(c, entry)
-    /\ UNCHANGED <<cache, cacheVersion, reads>>
+    /\ UNCHANGED <<cache, cacheVersion, history>>
 
 \* Remove key 'k' from the map on client 'c'
 \* Increment the system state version and remove the entry from the system state.
@@ -221,7 +217,7 @@ Remove(c, k) ==
           /\ state' = DropKey(state, k)
           /\ EnqueueEvent(entry)
           /\ DeferCache(c, entry)
-    /\ UNCHANGED <<cache, cacheVersion, reads>>
+    /\ UNCHANGED <<cache, cacheVersion, history>>
 
 ----
 
@@ -237,7 +233,7 @@ Init ==
           /\ cachePending = [c \in Client |-> [i \in {} |-> nilEntry]]
           /\ cacheVersion = [c \in Client |-> 0]
           /\ events = [c \in Client |-> [i \in {} |-> nilEntry]]
-    /\ reads = [c \in Client |-> [k \in Key |-> <<>>]]
+    /\ history = [c \in Client |-> [k \in Key |-> <<>>]]
 
 Next ==
     \/ \E c \in Client : 
@@ -263,5 +259,5 @@ Spec == Init /\ [][Next]_<<vars>>
 
 =============================================================================
 \* Modification History
-\* Last modified Wed Feb 12 16:52:38 PST 2020 by jordanhalterman
+\* Last modified Wed Feb 12 17:20:34 PST 2020 by jordanhalterman
 \* Created Mon Feb 10 23:01:48 PST 2020 by jordanhalterman
