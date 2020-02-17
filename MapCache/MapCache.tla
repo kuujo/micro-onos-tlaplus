@@ -40,19 +40,12 @@ VARIABLE cachePending
 \* A strongly ordered sequence of update events
 VARIABLE events
 
-\* The history of history for the client, used by the model checker to verify sequential consistency
+\* The history of operations
 VARIABLE history
 
+INSTANCE MapHistory WITH history <- history
+
 vars == <<state, stateVersion, cache, cachePending, cacheVersion, events, history>>
-
-----
-
-\* The type invariant checks that the client's history never go back in time
-TypeInvariant ==
-    /\ \A c \in Client :
-       /\ \A k \in Key :
-          /\ \A r \in DOMAIN history[c][k] :
-                r > 1 => history[c][k][r] >= history[c][k][r-1]
 
 ----
 
@@ -104,8 +97,7 @@ Cache(c, e) ==
                    \/ /\ entry.key \in DOMAIN cache[c]
                       /\ entry.version > cache[c][entry.key].version
                 /\ cache' = [cache EXCEPT ![c] = PutEntry(cache[c], entry)]
-                /\ history' = [history EXCEPT ![c][entry.key] = 
-                      Append(history[c][entry.key], entry.version)]
+                /\ Record(c, entry.key, entry.version)
              \/ /\ \/ entry.version <= cacheVersion[c]
                    \/ /\ entry.key \in DOMAIN cache[c]
                       /\ entry.version <= cache[c][entry.key].version
@@ -177,7 +169,7 @@ of threads by the OS.
 \* before recording the value.
 Get(c, k) ==
     /\ \/ /\ k \in DOMAIN cache[c]
-          /\ history' = [history EXCEPT ![c][k] = Append(history[c][k], cache[c][k].version)]
+          /\ Record(c, k, cache[c][k].version)
           /\ UNCHANGED <<cachePending>>
        \/ /\ k \notin DOMAIN cache[c]
           /\ k \in DOMAIN state
@@ -259,5 +251,5 @@ Spec == Init /\ [][Next]_<<vars>>
 
 =============================================================================
 \* Modification History
-\* Last modified Wed Feb 12 17:20:34 PST 2020 by jordanhalterman
+\* Last modified Sun Feb 16 17:55:24 PST 2020 by jordanhalterman
 \* Created Mon Feb 10 23:01:48 PST 2020 by jordanhalterman
