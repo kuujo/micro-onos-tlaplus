@@ -97,7 +97,7 @@ Cache(c, e) ==
                    \/ /\ entry.key \in DOMAIN cache[c]
                       /\ entry.version > cache[c][entry.key].version
                 /\ cache' = [cache EXCEPT ![c] = PutEntry(cache[c], entry)]
-                /\ Record(c, entry.key, entry.version)
+                /\ RecordRead(c, entry.key, entry.version)
              \/ /\ \/ entry.version <= cacheVersion[c]
                    \/ /\ entry.key \in DOMAIN cache[c]
                       /\ entry.version <= cache[c][entry.key].version
@@ -169,7 +169,7 @@ of threads by the OS.
 \* before recording the value.
 Get(c, k) ==
     /\ \/ /\ k \in DOMAIN cache[c]
-          /\ Record(c, k, cache[c][k].version)
+          /\ RecordRead(c, k, cache[c][k].version)
           /\ UNCHANGED <<cachePending>>
        \/ /\ k \notin DOMAIN cache[c]
           /\ k \in DOMAIN state
@@ -251,5 +251,5 @@ Spec == Init /\ [][Next]_<<vars>>
 
 =============================================================================
 \* Modification History
-\* Last modified Sun Feb 16 17:55:24 PST 2020 by jordanhalterman
+\* Last modified Sun Feb 16 19:01:29 PST 2020 by jordanhalterman
 \* Created Mon Feb 10 23:01:48 PST 2020 by jordanhalterman

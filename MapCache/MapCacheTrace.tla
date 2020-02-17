@@ -2,24 +2,37 @@
 
 EXTENDS Naturals, Sequences, TLC, Trace
 
-VARIABLE history
+VARIABLE reads
+
+VARIABLE events
 
 VARIABLE i
 
-INSTANCE MapHistory WITH history <- history
+INSTANCE MapHistory WITH history <- reads, events <- events
 
-Read == LET record == Trace[i'] IN Record(record.process, record.key, record.version)
+Read == 
+    LET record == Trace[i'] 
+    IN 
+       \/ /\ \/ record.op = "put"
+             \/ record.op = "get"
+             \/ record.op = "remove"
+          /\ RecordRead(record.process, record.key, record.version)
+          /\ UNCHANGED <<events>>
+       \/ /\ record.op = "event"
+          /\ RecordEvent(record.process, record.key, record.version)
+          /\ UNCHANGED <<reads>>
 
 Init ==
     /\ i = 1
-    /\ history = [p \in {} |-> [k \in {} |-> <<>>]]
+    /\ reads = [p \in {} |-> [k \in {} |-> <<>>]]
+    /\ events = [p \in {} |-> [k \in {} |-> <<>>]]
 Next ==
     \/ i < Len(Trace) /\ i' = i + 1 /\ Read
-    \/ UNCHANGED <<i, history>>
+    \/ UNCHANGED <<i, reads, events>>
 
-Spec == Init /\ [][Next]_<<i, history>>
+Spec == Init /\ [][Next]_<<i, reads, events>>
 
 =============================================================================
 \* Modification History
-\* Last modified Sun Feb 16 18:33:21 PST 2020 by jordanhalterman
+\* Last modified Sun Feb 16 19:07:08 PST 2020 by jordanhalterman
 \* Created Sun Feb 16 17:17:30 PST 2020 by jordanhalterman
