@@ -23,7 +23,7 @@ Read ==
           /\ UNCHANGED <<reads>>
 
 Init ==
-    /\ i = 1
+    /\ i = 0
     /\ reads = [p \in {} |-> [k \in {} |-> <<>>]]
     /\ events = [p \in {} |-> [k \in {} |-> <<>>]]
 Next ==
@@ -34,5 +34,5 @@ Spec == Init /\ [][Next]_<<i, reads, events>>
 
 =============================================================================
 \* Modification History
-\* Last modified Sun Feb 16 19:07:08 PST 2020 by jordanhalterman
+\* Last modified Sun Feb 16 20:13:57 PST 2020 by jordanhalterman
 \* Created Sun Feb 16 17:17:30 PST 2020 by jordanhalterman
